@@ -1,0 +1,287 @@
+import torch
+import torch.nn as nn
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import time
+from utils import DYSProjector, euler_step, rk4_step, ResBlock, ControlNet
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+import argparse
+
+
+# parse args
+parser = argparse.ArgumentParser()
+parser.add_argument("--problem", choices=['double_integrator_single', "double_integrator_multi"])
+parser.add_argument("--epochs", type=int, default=1000)
+parser.add_argument("--lr", type=float, default=0.001)
+parser.add_argument("--load_path", type=str, default=None)
+parser.add_argument("--seed", type=int, default=0)
+
+
+parser.add_argument("--hidden_dim", type=int, default=64)
+parser.add_argument("--n_blocks", type=int, default=3)
+args = parser.parse_args()
+
+
+n_epochs = args.epochs
+lr = args.lr
+load_path = args.load_path
+seed = args.seed
+torch.manual_seed(seed)
+problem = args.problem
+hidden_dim = args.hidden_dim
+n_blocks = args.n_blocks
+
+if problem == "double_integrator_single":
+    from double_integrator_single import A, B, f, lagrangian, G, position_dimension, barrier_function, evaluate_barriers, gamma, psi1_function, evaluate_psi1, construct_cbf_constraints, sample_initial_condition, compute_loss, plot_trajectory
+    p_target = 3 * torch.tensor([1.0, 1.0]).to(device).view(1, 2)
+    z_target = torch.cat([p_target, torch.zeros(1, 2).to(device)], dim=-1)
+    p0 = torch.zeros(1, 2).to(device)
+    v0 = torch.zeros(1, 2).to(device)
+    z0 = torch.cat([p0, v0], dim=-1)
+    
+    T = 10.0
+    dt = 0.2
+    num_steps = int(T / dt)
+    
+    # Cost weights
+    alpha_running = 1
+    alpha_terminal = 2e1
+    weight_decay = 1e-4
+    
+    # Obstacles
+    obstacle_center_1 = torch.tensor([0.4, 1.0]).view(1, 2).to(device)
+    obstacle_center_2 = torch.tensor([2.2, 2.2]).view(1, 2).to(device)
+    obstacle_center_3 = torch.tensor([2.4, 0.6]).view(1, 2).to(device)
+    obstacle_centers = [obstacle_center_1, obstacle_center_2, obstacle_center_3]
+    obstacle_radius = 0.3
+    eps_safe = 1e-1
+    
+    # Training params
+    log_every = 1
+    z0_std = 1e-1
+    batch_size = 32
+    plot_freq = 50
+    
+    # Initialize network and optimizer
+    net = ControlNet(input_dim=5, hidden_dim=hidden_dim, output_dim=2, n_blocks=n_blocks).to(device)
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
+    proj = DYSProjector().to(device)
+    print('Number of parameters in control net:', sum(p.numel() for p in net.parameters()))
+    
+    def u_fn(z, ti):
+        return net(z, ti)
+        
+    # Training loop
+    loss_history = []
+    run_history = []
+    term_history = []
+    proj_history = []
+    n_iters_history = []
+    max_res_norm_history = []
+    barrier_function_history = []
+    grad_norm_history = []
+
+    for epoch in range(1, n_epochs+1):
+        start_time = time.time()
+        optimizer.zero_grad()
+
+        z0_sample = sample_initial_condition(z0, z0_std, batch_size=batch_size)
+        assert z0_sample.shape == (batch_size, 4)
+
+        total_cost, running_cost, terminal_cost, isprojected, n_iters_array, max_res_norm_array, barrier_value_array, traj = compute_loss(
+            u_fn, z0_sample, num_steps, f, p_target, obstacle_centers, obstacle_radius, eps_safe,
+            alpha_running, alpha_terminal, proj, dt = dt
+        )
+
+        total_cost.backward()
+        optimizer.step()
+
+        # Compute grad norm
+        total_grad_norm = 0.0
+        for param in net.parameters():
+            if param.grad is not None:
+                param_norm = param.grad.data.norm(2)
+                total_grad_norm += param_norm.item() ** 2
+        total_grad_norm = total_grad_norm ** 0.5
+
+        end_time = time.time()
+
+        loss_history.append(total_cost.item())
+        run_history.append(running_cost.item())
+        term_history.append(terminal_cost.item())
+        proj_history.append(isprojected)
+        n_iters_history.append(n_iters_array.max().item())
+        max_res_norm_history.append(max_res_norm_array.max().item())
+        barrier_function_history.append(barrier_value_array.min().item())
+        grad_norm_history.append(total_grad_norm)
+
+        if epoch % log_every == 0:
+            print(f"epoch {epoch:4d} total={total_cost.item():.4e}"
+                  f"  L={running_cost.item():.4e}"
+                  f"  G={terminal_cost.item():.4e}"
+                  f"  proj={int(isprojected)}"
+                  f"  res={max_res_norm_array.max().item():.2e}"
+                  f"  h={barrier_value_array.min().item():.2e}"
+                  f"  iters={int(n_iters_array.mean())}"
+                  f"  grad={total_grad_norm:.2e}"
+                  f"  t={end_time - start_time:.2f}s")
+
+        if epoch % plot_freq == 0:
+            print("  Plotting trajectory...")
+            plot_trajectory(traj.cpu().numpy(),
+                          [obstacle_center_1.cpu().numpy(), obstacle_center_2.cpu().numpy(), obstacle_center_3.cpu().numpy()],
+                          obstacle_radius, p_target)
+
+        if epoch % 10 == 0:
+            alpha_terminal += 5
+            print("new alpha_terminal: ", alpha_terminal)
+        if epoch % int(0.4*n_epochs) == 0:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] *= 0.5
+                print("new lr: ", param_group['lr'])
+
+    print("Training complete.")
+    
+    # Plot training curves
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3))
+
+    axes[0].semilogy(loss_history, label="total")
+    axes[0].semilogy(run_history,  label="running",  linestyle="--")
+    axes[0].semilogy(term_history, label="terminal", linestyle=":")
+    axes[0].set_title("Loss"); axes[0].set_xlabel("epoch"); axes[0].legend()
+
+    axes[1].plot(proj_history)
+    axes[1].set_title("Projection triggered"); axes[1].set_xlabel("epoch"); axes[1].set_ylabel("0/1")
+
+    plt.tight_layout()
+    plt.savefig("training_curve.png", bbox_inches="tight", dpi=400)
+
+elif problem == "double_integrator_multi":
+    from double_integrator_multi import n_agent, A, B, f, lagrangian, G, barrier_function, evaluate_barriers, gamma, psi1_function, evaluate_psi1, construct_cbf_constraints, sample_initial_condition, compute_loss, plot_trajectory
+    p_target = 1.5 * torch.tensor([1.0, 1.0]).to(device).view(1, 2)
+    z_target = torch.cat([p_target, torch.zeros(1, 2).to(device)], dim=-1)
+    
+    T = 10.0
+    dt = 0.2
+    num_steps = int(T / dt)
+    
+    # Cost weights
+    alpha_running = 1
+    alpha_terminal = 2e1
+    weight_decay = 1e-3
+    
+    # Obstacles
+    # obstacle_center_1 = torch.tensor([0.4, 1.0]).view(1, 2).to(device)
+    # obstacle_center_2 = torch.tensor([2.2, 2.2]).view(1, 2).to(device)
+    # obstacle_center_3 = torch.tensor([2.4, 0.6]).view(1, 2).to(device)
+    obstacle_center_1 = torch.tensor([0.2, 0.8]).view(1, 2).to(device)
+    obstacle_center_2 = torch.tensor([2.4, 2.4]).view(1, 2).to(device)
+    obstacle_center_3 = torch.tensor([2.4, 0.4]).view(1, 2).to(device)
+    obstacle_centers = [obstacle_center_1, obstacle_center_2, obstacle_center_3]
+    obstacle_radius = 0.3
+    eps_safe = 1e-1
+    
+    # Training params
+    log_every = 1
+    z0_std = 1e-1
+    batch_size = 32
+    plot_freq = 50
+    
+    # Initialize network and optimizer
+    net = ControlNet(input_dim=25, hidden_dim=hidden_dim, output_dim=12, n_blocks=n_blocks).to(device)
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
+    proj = DYSProjector().to(device)
+    print('Number of parameters in control net:', sum(p.numel() for p in net.parameters()))
+    
+    def u_fn(z, ti):
+        return net(z, ti)
+        
+    # Training loop
+    loss_history = []
+    run_history = []
+    term_history = []
+    proj_history = []
+    n_iters_history = []
+    max_res_norm_history = []
+    barrier_function_history = []
+    grad_norm_history = []
+
+    for epoch in range(1, n_epochs+1):
+        start_time = time.time()
+        optimizer.zero_grad()
+
+        z0_sample = sample_initial_condition(batch_size, z0_std)
+        assert z0_sample.shape == (batch_size, 24)
+
+        total_cost, running_cost, terminal_cost, isprojected, n_iters_array, max_res_norm_array, barrier_value_array, traj = compute_loss(
+            u_fn, z0_sample, num_steps, f, p_target, obstacle_centers, obstacle_radius, eps_safe,
+            alpha_running, alpha_terminal, proj, dt = dt
+        )
+
+        total_cost.backward()
+        optimizer.step()
+
+        # Compute grad norm
+        total_grad_norm = 0.0
+        for param in net.parameters():
+            if param.grad is not None:
+                param_norm = param.grad.data.norm(2)
+                total_grad_norm += param_norm.item() ** 2
+        total_grad_norm = total_grad_norm ** 0.5
+
+        end_time = time.time()
+
+        loss_history.append(total_cost.item())
+        run_history.append(running_cost.item())
+        term_history.append(terminal_cost.item())
+        proj_history.append(isprojected)
+        n_iters_history.append(n_iters_array.max().item())
+        max_res_norm_history.append(max_res_norm_array.max().item())
+        barrier_function_history.append(barrier_value_array.min().item())
+        grad_norm_history.append(total_grad_norm)
+
+        if epoch % log_every == 0:
+            print(f"epoch {epoch:4d} total={total_cost.item():.4e}"
+                  f"  L={running_cost.item():.4e}"
+                  f"  G={terminal_cost.item():.4e}"
+                  f"  proj={int(isprojected)}"
+                  f"  res={max_res_norm_array.max().item():.2e}"
+                  f"  h={barrier_value_array.min().item():.2e}"
+                  f"  iters={int(n_iters_array.mean())}"
+                  f"  grad={total_grad_norm:.2e}"
+                  f"  t={end_time - start_time:.2f}s")
+
+        if epoch % plot_freq == 0:
+            print("  Plotting trajectory...")
+            plot_trajectory(traj.cpu().numpy(),
+                          [obstacle_center_1.cpu().numpy(), obstacle_center_2.cpu().numpy(), obstacle_center_3.cpu().numpy()],
+                          obstacle_radius, p_target)
+
+        if epoch % 10 == 0:
+            if alpha_terminal <= 2e2:
+                alpha_terminal += 5
+                print("new alpha_terminal: ", alpha_terminal)
+        if epoch % int(800) == 0:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] *= 0.5
+                print("new lr: ", param_group['lr'])
+
+    print("Training complete.")
+    
+    # Plot training curves
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3))
+
+    axes[0].semilogy(loss_history, label="total")
+    axes[0].semilogy(run_history,  label="running",  linestyle="--")
+    axes[0].semilogy(term_history, label="terminal", linestyle=":")
+    axes[0].set_title("Loss"); axes[0].set_xlabel("epoch"); axes[0].legend()
+
+    axes[1].plot(proj_history)
+    axes[1].set_title("Projection triggered"); axes[1].set_xlabel("epoch"); axes[1].set_ylabel("0/1")
+
+    plt.tight_layout()
+    plt.savefig("training_curve.png", bbox_inches="tight", dpi=400)
+
