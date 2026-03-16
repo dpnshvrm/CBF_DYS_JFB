@@ -16,6 +16,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--problem", choices=['double_integrator_single', "double_integrator_multi"])
 parser.add_argument("--epochs", type=int, default=1000)
 parser.add_argument("--lr", type=float, default=0.001)
+parser.add_argument("--lr_decay", type=int, default=600)
 parser.add_argument("--load_path", type=str, default=None)
 parser.add_argument("--seed", type=int, default=0)
 
@@ -27,6 +28,7 @@ args = parser.parse_args()
 
 n_epochs = args.epochs
 lr = args.lr
+lr_decay = args.lr_decay
 load_path = args.load_path
 seed = args.seed
 torch.manual_seed(seed)
@@ -138,7 +140,7 @@ if problem == "double_integrator_single":
         if epoch % 10 == 0:
             alpha_terminal += 5
             print("new alpha_terminal: ", alpha_terminal)
-        if epoch % int(0.4*n_epochs) == 0:
+        if epoch % lr_decay == 0:  # 400
             for param_group in optimizer.param_groups:
                 param_group['lr'] *= 0.5
                 print("new lr: ", param_group['lr'])
@@ -161,8 +163,10 @@ if problem == "double_integrator_single":
 
 elif problem == "double_integrator_multi":
     from double_integrator_multi import n_agent, A, B, f, lagrangian, G, barrier_function, evaluate_barriers, gamma, psi1_function, evaluate_psi1, construct_cbf_constraints, sample_initial_condition, compute_loss, plot_trajectory
-    p_target = 1.5 * torch.tensor([1.0, 1.0]).to(device).view(1, 2)
-    z_target = torch.cat([p_target, torch.zeros(1, 2).to(device)], dim=-1)
+    center = torch.tensor([1.5, 1.5], device=device)
+    radius_target = (2 * 0.2**2) ** 0.5
+    angles = -2 * torch.pi * torch.arange(n_agent, device=device) / n_agent
+    p_target = center.view(1, 2) + radius_target * torch.stack([torch.cos(angles), torch.sin(angles)], dim=1)
     
     T = 10.0
     dt = 0.2
@@ -174,19 +178,20 @@ elif problem == "double_integrator_multi":
     weight_decay = 1e-3
     
     # Obstacles
-    # obstacle_center_1 = torch.tensor([0.4, 1.0]).view(1, 2).to(device)
-    # obstacle_center_2 = torch.tensor([2.2, 2.2]).view(1, 2).to(device)
-    # obstacle_center_3 = torch.tensor([2.4, 0.6]).view(1, 2).to(device)
-    obstacle_center_1 = torch.tensor([0.2, 0.8]).view(1, 2).to(device)
-    obstacle_center_2 = torch.tensor([2.4, 2.4]).view(1, 2).to(device)
-    obstacle_center_3 = torch.tensor([2.4, 0.4]).view(1, 2).to(device)
+    obstacle_center_1 = torch.tensor([0.63, 1.0]).view(1, 2).to(device)
+    obstacle_center_2 = torch.tensor([1.5, 2.5]).view(1, 2).to(device)
+    obstacle_center_3 = torch.tensor([2.37, 1.0]).view(1, 2).to(device)
     obstacle_centers = [obstacle_center_1, obstacle_center_2, obstacle_center_3]
-    obstacle_radius = 0.3
-    eps_safe = 1e-1
+    # obstacle_center_1 = torch.tensor([0.2, 0.8]).view(1, 2).to(device)
+    # obstacle_center_2 = torch.tensor([2.4, 2.4]).view(1, 2).to(device)
+    # obstacle_center_3 = torch.tensor([2.4, 0.4]).view(1, 2).to(device)
+    # obstacle_centers = [obstacle_center_1, obstacle_center_2, obstacle_center_3]
+    obstacle_radius = 0.35
+    eps_safe = 0.15
     
     # Training params
     log_every = 1
-    z0_std = 1e-1
+    z0_std = 5e-2
     batch_size = 32
     plot_freq = 50
     
@@ -258,18 +263,20 @@ elif problem == "double_integrator_multi":
             print("  Plotting trajectory...")
             plot_trajectory(traj.cpu().numpy(),
                           [obstacle_center_1.cpu().numpy(), obstacle_center_2.cpu().numpy(), obstacle_center_3.cpu().numpy()],
-                          obstacle_radius, p_target)
+                          obstacle_radius, p_target, eps_safe=eps_safe)
 
-        if epoch % 10 == 0:
+        if epoch % 40 == 0:
             if alpha_terminal <= 2e2:
                 alpha_terminal += 5
                 print("new alpha_terminal: ", alpha_terminal)
-        if epoch % int(800) == 0:
+        if epoch % lr_decay == 0:  # 800
             for param_group in optimizer.param_groups:
                 param_group['lr'] *= 0.5
                 print("new lr: ", param_group['lr'])
 
     print("Training complete.")
+    torch.save(net.state_dict(), "control_net.pth")
+    print("Model saved to control_net.pth")
     
     # Plot training curves
     fig, axes = plt.subplots(1, 2, figsize=(10, 3))

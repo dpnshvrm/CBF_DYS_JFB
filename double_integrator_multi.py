@@ -38,7 +38,9 @@ def lagrangian(u):
 def G(z, p_target):
     """Terminal cost"""
     pos = z[:, :4*n_agent].reshape(z.shape[0], n_agent, 4)[:, :, :2]          # (B, N, 2)
-    output = 0.5 * ((pos - p_target)**2).sum(dim=-1).sum(dim=-1)              # (B,)
+    output = 0.5 * ((pos - p_target.unsqueeze(0))**2).sum(dim=-1).sum(dim=-1)              # (B,)
+    vel = z[:, :4*n_agent].reshape(z.shape[0], n_agent, 4)[:, :, 2:]          # (B, N, 2) 
+    output = output + 0.5 * (vel**2).sum(dim=-1).sum(dim=-1)                  # also add velocity penalty to stabilize behavior
     output = output.mean()
     assert output.shape == ()
     return output    
@@ -220,7 +222,7 @@ def plot_trajectory(traj, obstacle_centers, obstacle_radius, p_target, title="Tr
         plt.gca().add_patch(safety_circle)
 
     # Plot target position
-    plt.scatter(p_target[:, 0].item(), p_target[:, 1].item(), color='green', label='Target', s=100, marker='X')
+    plt.scatter(p_target[:, 0].detach().cpu().numpy(), p_target[:, 1].detach().cpu().numpy(), color='green', label='Target', s=100, marker='X')
 
     plt.xlabel('Position X')
     plt.ylabel('Position Y')
