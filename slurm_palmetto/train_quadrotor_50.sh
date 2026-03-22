@@ -7,9 +7,9 @@
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 
-set -euo pipefail
+set -eo pipefail
 
-source /etc/profile
+source /etc/profile 2>/dev/null || true
 module load anaconda3/2023.09-0
 
 ENV_PATH="${ENV_PATH:-/scratch/dverma/cbf-quadrotor-torch}"
