@@ -13,6 +13,7 @@ from quadrotor_multi_50 import (
     CONTROL_DIM,
     STATE_DIM,
     TARGET_RADIUS,
+    TARGET_TYPE,
     T_hover,
     build_target_positions,
     compute_loss,
@@ -46,12 +47,12 @@ alpha_running = 1.0
 alpha_terminal = 120.0
 
 obstacle_cfg = [
-    [0.5, 1.0, 1.0],   # left
-    [2.5, 1.0, 1.0],   # right
+    [1.0, 1.2, 1.0],   # left
+    [2.0, 1.2, 1.0],   # right
     [1.5, 2.0, 1.0],   # top-center
 ]
-obstacle_radius = 0.25
-eps_safe = 0.08
+obstacle_radius = 0.28
+eps_safe = 0.10
 
 n_epochs = 5000
 learning_rate = 1e-4
@@ -73,7 +74,7 @@ print(f'CONTROL_DIM  : {CONTROL_DIM}')
 print(f'Device       : {device}')
 print(f'Horizon      : {T_horizon}s')
 print(f'Batch size   : {batch_size}')
-print(f'Target ring  : radius={TARGET_RADIUS}')
+print(f'Target type  : {TARGET_TYPE}')
 if device.startswith('cuda'):
     gpu_idx = torch.device(device).index or 0
     print(f'GPU          : {torch.cuda.get_device_name(gpu_idx)}')
@@ -83,6 +84,13 @@ obstacle_centers = [
     for c in obstacle_cfg
 ]
 p_target = build_target_positions(device)
+
+# Debug: print target positions to verify
+print(f'Target positions (first 5):')
+for i in range(min(5, n_agent)):
+    print(f'  Agent {i}: x={p_target[i,0]:.3f}, y={p_target[i,1]:.3f}, z={p_target[i,2]:.3f}')
+print(f'  ...')
+print(f'  Agent {n_agent-1}: x={p_target[-1,0]:.3f}, y={p_target[-1,1]:.3f}, z={p_target[-1,2]:.3f}')
 
 net = ControlNet(
     input_dim=STATE_DIM + 1,
@@ -111,12 +119,22 @@ def save_environment_snapshot(path):
         z0 = sample_initial_condition(batch_size=1, z0_std=0.0).cpu().numpy()[0]
     tgt = p_target.detach().cpu().numpy()
 
-    fig, ax = plt.subplots(figsize=(8, 8))
+    fig, ax = plt.subplots(figsize=(10, 8))
     ring_colors = plt.cm.hsv(np.linspace(0, 1, n_agent, endpoint=False))
+
+    # Plot start positions
     for a in range(n_agent):
         idx = 12 * a
-        ax.scatter(z0[idx], z0[idx + 1], s=14, color=ring_colors[a], alpha=0.85)
-        ax.scatter(tgt[a, 0], tgt[a, 1], s=14, marker='x', color=ring_colors[a], alpha=0.85)
+        ax.scatter(z0[idx], z0[idx + 1], s=20, color=ring_colors[a], alpha=0.7, marker='o', label='Start' if a == 0 else '')
+
+    # Plot target positions
+    for a in range(n_agent):
+        ax.scatter(tgt[a, 0], tgt[a, 1], s=30, marker='X', color=ring_colors[a], alpha=0.9, edgecolor='black', linewidth=0.5)
+
+    # If horizontal line, draw connecting line to show formation
+    from quadrotor_multi_50 import TARGET_TYPE
+    if TARGET_TYPE == 'horizontal_line':
+        ax.plot(tgt[:, 0], tgt[:, 1], 'g--', linewidth=2, alpha=0.5, label='Target line')
     for c in obstacle_cfg:
         ax.add_patch(plt.Circle((c[0], c[1]), obstacle_radius, color='red', alpha=0.35))
         ax.add_patch(
@@ -129,11 +147,12 @@ def save_environment_snapshot(path):
                 linewidth=1.0,
             )
         )
-    ax.set_title('50-rotor start and target placement')
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
+    ax.set_title(f'50-rotor start and target placement ({TARGET_TYPE})')
+    ax.set_xlabel('X [m]')
+    ax.set_ylabel('Y [m]')
     ax.set_aspect('equal')
     ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper left')
     plt.tight_layout()
     plt.savefig(path, dpi=180, bbox_inches='tight')
     plt.close(fig)
@@ -223,6 +242,7 @@ def save_trajectory_projection(traj_np, path, n_show=2):
     ax3d.set_ylabel('Y [m]')
     ax3d.set_zlabel('Z [m]')
     ax3d.set_title('3D Trajectory')
+    ax3d.set_box_aspect([1, 1, 0.5])  # Equal aspect for X,Y; shorter Z
     ax3d.view_init(elev=25, azim=45)
     ax3d.legend()
 

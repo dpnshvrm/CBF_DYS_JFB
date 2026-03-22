@@ -16,8 +16,18 @@ CONTROL_DIM = 4 * n_agent
 
 START_CENTER = torch.tensor([1.5, 0.0])
 START_RADIUS = 0.5
+
+# Target configuration: choose 'circle' or 'horizontal_line'
+TARGET_TYPE = 'horizontal_line'  # 'circle' or 'horizontal_line'
+
+# For circle target
 TARGET_CENTER = torch.tensor([1.5, 3.0])
 TARGET_RADIUS = 0.5
+
+# For horizontal line target
+TARGET_LINE_Y = 3.0
+TARGET_LINE_X_MIN = 0.3
+TARGET_LINE_X_MAX = 2.7
 TARGET_Z = 1.0
 
 
@@ -155,12 +165,21 @@ def sample_initial_condition(batch_size=64, z0_std=0.03):
 
 
 def build_target_positions(runtime_device):
-    center = TARGET_CENTER.to(runtime_device)
-    angles = -2 * torch.pi * torch.arange(n_agent, device=runtime_device) / n_agent
     p_target = torch.zeros(n_agent, 3, device=runtime_device)
-    p_target[:, 0] = center[0] + TARGET_RADIUS * torch.cos(angles)
-    p_target[:, 1] = center[1] + TARGET_RADIUS * torch.sin(angles)
-    p_target[:, 2] = TARGET_Z
+
+    if TARGET_TYPE == 'horizontal_line':
+        # Evenly spaced along horizontal line
+        x_positions = torch.linspace(TARGET_LINE_X_MIN, TARGET_LINE_X_MAX, n_agent, device=runtime_device)
+        p_target[:, 0] = x_positions
+        p_target[:, 1] = TARGET_LINE_Y
+        p_target[:, 2] = TARGET_Z
+    else:  # 'circle'
+        center = TARGET_CENTER.to(runtime_device)
+        angles = -2 * torch.pi * torch.arange(n_agent, device=runtime_device) / n_agent
+        p_target[:, 0] = center[0] + TARGET_RADIUS * torch.cos(angles)
+        p_target[:, 1] = center[1] + TARGET_RADIUS * torch.sin(angles)
+        p_target[:, 2] = TARGET_Z
+
     return p_target
 
 
