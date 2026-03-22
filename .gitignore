@@ -8,3 +8,4 @@ Palmetto_HPC_Cheat_Sheet.md
 .vscode/settings.json
 /results_quadrotor_50/
 test_visualization_50.py
+/slurm_logs/

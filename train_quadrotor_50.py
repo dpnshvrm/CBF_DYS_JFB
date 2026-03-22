@@ -46,26 +46,26 @@ alpha_running = 1.0
 alpha_terminal = 120.0
 
 obstacle_cfg = [
-    [0.7, 1.1, 1.0],   # bottom-left
-    [2.3, 1.1, 1.0],   # bottom-right
-    [1.5, 1.9, 1.0],   # top-center (inverted triangle)
+    [0.5, 1.0, 1.0],   # left
+    [2.5, 1.0, 1.0],   # right
+    [1.5, 2.0, 1.0],   # top-center
 ]
-obstacle_radius = 0.30
-eps_safe = 0.10
+obstacle_radius = 0.25
+eps_safe = 0.08
 
 n_epochs = 5000
-learning_rate = 5e-5
+learning_rate = 1e-4
 lr_decay = 600
-batch_size = 64
-z0_std = 0.03
+batch_size = 32
+z0_std = 0.05
 log_every = 5
 plot_every = 100
 save_ckpt_every = 250
 
-hidden_dim = 256
-n_blocks = 4
-T_dev_scale = 0.35
-tau_scale = 0.08
+hidden_dim = 512
+n_blocks = 5
+T_dev_scale = 0.5
+tau_scale = 0.12
 
 print(f'n_agent      : {n_agent}')
 print(f'STATE_DIM    : {STATE_DIM}')
@@ -171,41 +171,60 @@ def save_trajectory_projection(traj_np, path, n_show=2):
     from mpl_toolkits.mplot3d import Axes3D
 
     fig = plt.figure(figsize=(18, 8))
-    ring_colors = plt.cm.hsv(np.linspace(0, 1, n_agent, endpoint=False))
+    ring_colors = plt.cm.tab10(range(n_agent))
     tgt = p_target.detach().cpu().numpy()
+    nt = traj_np.shape[2]
 
     # 3D view (left panel)
     ax3d = fig.add_subplot(121, projection='3d')
     for i in range(min(n_show, traj_np.shape[0])):
         for a in range(n_agent):
             idx = 12 * a
-            ax3d.plot(traj_np[i, idx, :], traj_np[i, idx + 1, :], traj_np[i, idx + 2, :],
-                     color=ring_colors[a], alpha=0.45, linewidth=0.8)
-            # Start position
-            ax3d.scatter(traj_np[i, idx, 0], traj_np[i, idx + 1, 0], traj_np[i, idx + 2, 0],
-                        color=ring_colors[a], s=20, marker='o', alpha=0.7)
+            xs = traj_np[i, idx, :]
+            ys = traj_np[i, idx + 1, :]
+            zs = traj_np[i, idx + 2, :]
+
+            # Fade trajectory from light to dark over time
+            for k in range(nt - 1):
+                alpha = 0.15 + 0.85 * k / nt
+                ax3d.plot(xs[k:k+2], ys[k:k+2], zs[k:k+2],
+                         color=ring_colors[a % 10], alpha=alpha, linewidth=1.2)
+
+            # Start and end markers
+            ax3d.scatter(xs[0], ys[0], zs[0], color=ring_colors[a % 10], s=30, marker='o')
+            ax3d.scatter(xs[-1], ys[-1], zs[-1], color=ring_colors[a % 10], s=60, marker='*')
 
     # Target positions
-    ax3d.scatter(tgt[:, 0], tgt[:, 1], tgt[:, 2], c='limegreen', marker='X', s=40, label='target')
+    ax3d.scatter(tgt[:, 0], tgt[:, 1], tgt[:, 2], c='limegreen', marker='X', s=140,
+                label='Target', zorder=10, edgecolors='black', linewidths=0.5)
 
-    # 3D obstacle spheres
-    u = np.linspace(0, 2 * np.pi, 20)
-    v = np.linspace(0, np.pi, 20)
-    x_sphere = np.outer(np.cos(u), np.sin(v))
-    y_sphere = np.outer(np.sin(u), np.sin(v))
-    z_sphere = np.outer(np.ones(np.size(u)), np.cos(v))
+    # 3D obstacle spheres with high-quality rendering
+    u = np.linspace(0, 2 * np.pi, 40)
+    v = np.linspace(0, np.pi, 40)
+    U, V = np.meshgrid(u, v)
+    x_sphere = np.sin(V) * np.cos(U)
+    y_sphere = np.sin(V) * np.sin(U)
+    z_sphere = np.cos(V)
 
     for c in obstacle_cfg:
+        # Solid obstacle
         ax3d.plot_surface(c[0] + obstacle_radius * x_sphere,
                          c[1] + obstacle_radius * y_sphere,
                          c[2] + obstacle_radius * z_sphere,
-                         color='red', alpha=0.3, linewidth=0)
+                         color='red', alpha=0.4, linewidth=0,
+                         shade=True, antialiased=True)
+        # Safety margin wireframe
+        ax3d.plot_wireframe(c[0] + (obstacle_radius + eps_safe) * x_sphere,
+                           c[1] + (obstacle_radius + eps_safe) * y_sphere,
+                           c[2] + (obstacle_radius + eps_safe) * z_sphere,
+                           color='red', alpha=0.15, linewidth=0.5, linestyle='--')
 
-    ax3d.set_xlabel('X')
-    ax3d.set_ylabel('Y')
-    ax3d.set_zlabel('Z')
+    ax3d.set_xlabel('X [m]')
+    ax3d.set_ylabel('Y [m]')
+    ax3d.set_zlabel('Z [m]')
     ax3d.set_title('3D Trajectory')
     ax3d.view_init(elev=25, azim=45)
+    ax3d.legend()
 
     # Top view XY (right panel)
     ax2d = fig.add_subplot(122)
