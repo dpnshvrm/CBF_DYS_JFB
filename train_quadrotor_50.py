@@ -242,7 +242,11 @@ def save_trajectory_projection(traj_np, path, n_show=2):
     ax3d.set_ylabel('Y [m]')
     ax3d.set_zlabel('Z [m]')
     ax3d.set_title('3D Trajectory')
-    ax3d.set_box_aspect([1, 1, 0.5])  # Equal aspect for X,Y; shorter Z
+    # Set equal aspect ratio so spheres look round, not flat
+    try:
+        ax3d.set_box_aspect([1, 1, 1])  # Equal aspect for all axes
+    except:
+        pass  # Older matplotlib versions don't support this
     ax3d.view_init(elev=25, azim=45)
     ax3d.legend()
 
