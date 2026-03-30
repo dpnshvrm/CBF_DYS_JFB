@@ -124,12 +124,12 @@ def train_quadrotor(args):
     print(f"\nCost weights: running={alpha_running}, terminal={alpha_terminal} → {alpha_terminal_final}")
     print(f"Alpha schedule: +{alpha_sched_step} every {alpha_sched_every} epochs")
 
-    # Training parameters - VERY conservative for CVXPyLayers
+    # Training parameters - Trying higher LR (stuck at 1e-5)
     num_epochs = args.epochs
-    learning_rate = args.lr if args.lr != 0.001 else 1e-5  # MUCH lower (was 1e-3, exploded!)
+    learning_rate = args.lr if args.lr != 0.001 else 1e-4  # Increase from 1e-5 (was stuck)
     lr_decay_epoch = args.lr_decay
-    batch_size = 16  # Small batch (was 64, too large)
-    z0_std = 2e-2  # Less noise (was 4e-2)
+    batch_size = 16  # Small batch
+    z0_std = 2e-2  # Less noise
     log_every = 1
     plot_freq = 100
 
