@@ -9,3 +9,4 @@ Palmetto_HPC_Cheat_Sheet.md
 /results_quadrotor_50/
 test_visualization_50.py
 /slurm_logs/
+models/config_cvxpy.json

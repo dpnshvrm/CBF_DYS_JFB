@@ -148,15 +148,18 @@ class CBFQPController:
 
         # Flatten parameters for QP layer
         # [u_desired, A_cbf_1, b_cbf_1, A_cbf_2, b_cbf_2, ...]
-        qp_params = [u_desired]
+        # Move to CPU for CVXPy solvers (they use numpy)
+        device = u_desired.device
+        qp_params = [u_desired.cpu()]
         for A, b in zip(A_cbf_list, b_cbf_list):
-            qp_params.append(A)
-            qp_params.append(b)
+            qp_params.append(A.cpu())
+            qp_params.append(b.cpu())
 
-        # Solve QP
+        # Solve QP (on CPU)
         u_safe, = self.qp_layer(*qp_params)
 
-        return u_safe
+        # Move result back to original device
+        return u_safe.to(device)
 
     def __repr__(self):
         if self.n_agent > 1:
