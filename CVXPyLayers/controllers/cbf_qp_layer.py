@@ -96,8 +96,17 @@ class CBFQPController:
         self.alpha = alpha
         self.num_obstacles = len(obstacles)
 
+        # Determine total number of constraints (for multi-agent, multiply by n_agent)
+        # Check if obstacles have n_agent attribute (multi-agent case)
+        if hasattr(obstacles[0], 'n_agent'):
+            self.n_agent = obstacles[0].n_agent
+            self.total_constraints = self.num_obstacles * self.n_agent
+        else:
+            self.n_agent = 1
+            self.total_constraints = self.num_obstacles
+
         # Create QP layer
-        self.qp_layer = create_cbf_qp_layer(dynamics.control_dim, self.num_obstacles)
+        self.qp_layer = create_cbf_qp_layer(dynamics.control_dim, self.total_constraints)
 
         # Verify all obstacles have same relative degree as dynamics
         for obs in obstacles:
@@ -126,8 +135,16 @@ class CBFQPController:
 
         for obstacle in self.obstacles:
             A_cbf, b_cbf = obstacle.compute_cbf_constraint(x, self.dynamics, self.alpha)
-            A_cbf_list.append(A_cbf)
-            b_cbf_list.append(b_cbf)
+
+            # Handle multi-agent constraints: flatten (batch, n_agent, ...) into separate constraints
+            if A_cbf.dim() == 3:  # Multi-agent case: (batch, n_agent, control_dim)
+                n_agent = A_cbf.shape[1]
+                for i in range(n_agent):
+                    A_cbf_list.append(A_cbf[:, i, :])  # (batch, control_dim)
+                    b_cbf_list.append(b_cbf[:, i])      # (batch,)
+            else:  # Single-agent case: (batch, control_dim)
+                A_cbf_list.append(A_cbf)
+                b_cbf_list.append(b_cbf)
 
         # Flatten parameters for QP layer
         # [u_desired, A_cbf_1, b_cbf_1, A_cbf_2, b_cbf_2, ...]
@@ -142,7 +159,15 @@ class CBFQPController:
         return u_safe
 
     def __repr__(self):
-        return (f"CBFQPController("
-                f"dynamics={self.dynamics.__class__.__name__}, "
-                f"num_obstacles={self.num_obstacles}, "
-                f"alpha={self.alpha})")
+        if self.n_agent > 1:
+            return (f"CBFQPController("
+                    f"dynamics={self.dynamics.__class__.__name__}, "
+                    f"n_agent={self.n_agent}, "
+                    f"num_obstacles={self.num_obstacles}, "
+                    f"total_constraints={self.total_constraints}, "
+                    f"alpha={self.alpha})")
+        else:
+            return (f"CBFQPController("
+                    f"dynamics={self.dynamics.__class__.__name__}, "
+                    f"num_obstacles={self.num_obstacles}, "
+                    f"alpha={self.alpha})")

@@ -106,13 +106,16 @@ class Quadrotor(ControlAffineDynamics):
         pos, angles, vel, ang_vel = self.split_state(x)
 
         # Drift dynamics
-        dpos = vel
-        dangles = ang_vel
-        dvel = -self.gravity * torch.tensor([0., 0., 1.],
-                                            device=x.device, dtype=x.dtype)
-        dang_vel = torch.zeros_like(ang_vel)
+        dpos = vel  # (batch, n_agent, 3)
+        dangles = ang_vel  # (batch, n_agent, 3)
 
-        drift = torch.cat([dpos, dangles, dvel, dang_vel], dim=-1)
+        # Gravity effect on velocity: broadcast to (batch, n_agent, 3)
+        e3 = torch.tensor([0., 0., 1.], device=x.device, dtype=x.dtype)
+        dvel = -self.gravity * e3.view(1, 1, 3).expand(batch, self.n_agent, 3)  # (batch, n_agent, 3)
+
+        dang_vel = torch.zeros_like(ang_vel)  # (batch, n_agent, 3)
+
+        drift = torch.cat([dpos, dangles, dvel, dang_vel], dim=-1)  # (batch, n_agent, 12)
         return drift.reshape(batch, self.state_dim)
 
     def g(self, x):
