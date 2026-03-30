@@ -41,7 +41,7 @@ def train_quadrotor(args):
     print("="*70)
 
     # Quadrotor parameters (matching train.py setup)
-    n_agent = 10
+    n_agent = 1
     mass = 0.5
     gravity = 1.0
     T_hover = mass * gravity
@@ -113,24 +113,24 @@ def train_quadrotor(args):
     )
     print(f"\nCBF Controller: {cbf_controller}")
 
-    # Cost weights (Conservative from README for 10 agents)
+    # Cost weights - VERY conservative schedule for CVXPyLayers
     alpha_running = 1.0
-    alpha_terminal = 10.0  # Start low (README recommendation)
-    alpha_terminal_final = 60.0  # Cap at 60 (README: 15-30 terminal cost is success)
+    alpha_terminal = 20.0  # Start at 20
+    alpha_terminal_final = 30.0  # Lower max (CVXPyLayers is sensitive)
     alpha_sched_step = 5.0  # Increase by 5
-    alpha_sched_every = 200  # Every 200 epochs
+    alpha_sched_every = 100  # Much slower: every 100 epochs (was 20)
     weight_decay = 1e-3
     print(f"\nCost weights: running={alpha_running}, terminal={alpha_terminal} (initial)")
     print(f"Alpha terminal schedule: +{alpha_sched_step} every {alpha_sched_every} epochs, max={alpha_terminal_final}")
 
-    # Training parameters (Conservative from README)
+    # Training parameters - Conservative settings
     num_epochs = args.epochs
-    learning_rate = args.lr if args.lr != 0.001 else 1e-4  # Conservative default
+    learning_rate = args.lr if args.lr != 0.001 else 1e-4  # Conservative LR
     lr_decay_epoch = args.lr_decay
     batch_size = 32
-    z0_std = 4e-2
+    z0_std = 4e-2  # Match train.py
     log_every = 1
-    plot_freq = 50
+    plot_freq = 100
 
     print(f"\nTraining: epochs={num_epochs}, batch_size={batch_size}, lr={learning_rate}")
     print(f"LR decay at epoch {lr_decay_epoch}")
@@ -150,9 +150,10 @@ def train_quadrotor(args):
     # Optimizer
     optimizer = optim.Adam(policy.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-    # Save directory
-    save_dir = Path("./models")
-    save_dir.mkdir(exist_ok=True)
+    # Save directory (inside CVXPyLayers/models/<script_name>/)
+    script_name = Path(__file__).stem  # e.g., "train_quadrotor_multi_cvxpy"
+    save_dir = Path(__file__).parent.parent / "models" / script_name
+    save_dir.mkdir(parents=True, exist_ok=True)
 
     # Save configuration
     config_dict = {
@@ -210,6 +211,10 @@ def train_quadrotor(args):
         initial_state[12*i+1] = -0.5  # y position
         initial_state[12*i+2] = 1.0  # z position
 
+    # Create directory for trajectory plots
+    plot_dir = save_dir / "plots"
+    plot_dir.mkdir(exist_ok=True)
+
     for epoch in tqdm(range(1, num_epochs + 1), desc="Training"):
         optimizer.zero_grad()
 
@@ -219,9 +224,14 @@ def train_quadrotor(args):
         for i in range(n_agent):
             z0_batch[:, 12*i:12*i+2] += z0_std * torch.randn(batch_size, 2, device=device, dtype=dtype)
 
-        # Forward rollout
+        # Forward rollout (store trajectory for plotting)
         running_cost = 0.0
         x = z0_batch
+
+        # Store trajectory if we're going to plot this epoch
+        if epoch % plot_freq == 0:
+            traj = torch.zeros(batch_size, dynamics.state_dim, num_steps + 1, device=device, dtype=dtype)
+            traj[:, :, 0] = z0_batch
 
         for t_step in range(num_steps):
             # Policy outputs desired control
@@ -241,6 +251,10 @@ def train_quadrotor(args):
 
             # Step dynamics
             x = dynamics.step(x, u_safe, dt)
+
+            # Store trajectory
+            if epoch % plot_freq == 0:
+                traj[:, :, t_step + 1] = x
 
             # Running cost
             running_cost += dt * 0.5 * (u_safe ** 2).sum(dim=-1).mean()
@@ -289,6 +303,19 @@ def train_quadrotor(args):
                       f"L={running_cost.item():.4e} G={terminal_cost.item():.4e} "
                       f"alpha_t={_alpha_terminal:.1f} h_min={min_barrier:.2e} grad={grad_norm:.2e}")
 
+        # Plotting
+        if epoch % plot_freq == 0:
+            tqdm.write(f"  Plotting trajectory at epoch {epoch}...")
+            plot_path = plot_dir / f"traj_epoch_{epoch:04d}.png"
+            dynamics.plot_trajectory(
+                traj=traj,
+                obstacles=obstacles,
+                p_target=p_target,
+                save_path=str(plot_path),
+                title=f"Epoch {epoch} - Quadrotor Trajectories"
+            )
+            tqdm.write(f"  Saved to: {plot_path}")
+
         # Update terminal cost weight (Conservative schedule from README)
         if epoch % alpha_sched_every == 0 and _alpha_terminal < alpha_terminal_final:
             _alpha_terminal += alpha_sched_step
@@ -325,6 +352,44 @@ def train_quadrotor(args):
     history_csv = save_dir / "training_history_cvxpy.csv"
     history_df.to_csv(history_csv, index=False)
     print(f"Training history saved to: {history_csv}")
+
+    # Generate final trajectory plot with best model
+    print("\n" + "="*70)
+    print("Generating final trajectory visualization...")
+    print("="*70)
+
+    # Rollout with best model (no gradient)
+    with torch.no_grad():
+        z0_batch = initial_state.unsqueeze(0).repeat(1, 1)  # Single trajectory, no noise
+        x = z0_batch
+        traj_final = torch.zeros(1, dynamics.state_dim, num_steps + 1, device=device, dtype=dtype)
+        traj_final[:, :, 0] = z0_batch
+
+        for t_step in range(num_steps):
+            u_desired = policy(x)
+            hover_bias = torch.zeros(dynamics.control_dim, device=device, dtype=dtype)
+            hover_bias[::4] = T_hover
+            u_desired = u_desired + hover_bias
+
+            try:
+                u_safe = cbf_controller.filter_control(x, u_desired)
+            except Exception as e:
+                print(f"CBF-QP failed at step {t_step}: {e}")
+                u_safe = u_desired
+
+            x = dynamics.step(x, u_safe, dt)
+            traj_final[:, :, t_step + 1] = x
+
+    # Plot final trajectory
+    final_plot_path = save_dir / "final_trajectory.png"
+    dynamics.plot_trajectory(
+        traj=traj_final,
+        obstacles=obstacles,
+        p_target=p_target,
+        save_path=str(final_plot_path),
+        title="Final Trajectory - Best Model"
+    )
+    print(f"Final trajectory plot saved to: {final_plot_path}")
 
     print("\nDone!")
 

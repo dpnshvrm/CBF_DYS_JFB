@@ -19,6 +19,9 @@ This gives RELATIVE DEGREE 2 for position-based barriers.
 """
 
 import torch
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+import numpy as np
 from .base import ControlAffineDynamics
 
 
@@ -180,6 +183,104 @@ class Quadrotor(ControlAffineDynamics):
         k4 = dynamics(x + dt * k3, u)
 
         return x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+
+    def plot_trajectory(self, traj, obstacles, p_target, save_path="trajs.png", title="Quadrotor Trajectories"):
+        """
+        Plot 3D trajectory visualization with obstacles.
+
+        Args:
+            traj: (batch, state_dim, num_steps+1) trajectory tensor
+            obstacles: list of SphericalObstacle objects
+            p_target: (n_agent, 3) target positions
+            save_path: where to save the plot
+            title: plot title
+        """
+        fig = plt.figure(figsize=(16, 8))
+        ax  = fig.add_subplot(121, projection='3d')
+        ax2 = fig.add_subplot(122)
+
+        colors = plt.cm.tab10(range(self.n_agent))
+
+        # Convert to numpy for plotting (use first trajectory in batch)
+        traj_np = traj[0].detach().cpu().numpy()  # (state_dim, num_steps+1)
+
+        # Plot each agent's trajectory
+        for a in range(self.n_agent):
+            b = 12 * a  # Each agent has 12 states: [x, y, z, psi, theta, phi, vx, vy, vz, vpsi, vtheta, vphi]
+
+            # 3D plot
+            ax.plot(traj_np[b,   :],
+                    traj_np[b+1, :],
+                    traj_np[b+2, :],
+                    color=colors[a], alpha=0.6, linewidth=1)
+            # Starting point
+            ax.scatter(traj_np[b, 0], traj_np[b+1, 0], traj_np[b+2, 0],
+                       color=colors[a], s=20, marker='o')
+
+            # 2D bird's-eye view
+            ax2.plot(traj_np[b,   :],
+                     traj_np[b+1, :],
+                     color=colors[a], alpha=0.6, linewidth=1)
+            ax2.scatter(traj_np[b, 0], traj_np[b+1, 0],
+                        color=colors[a], s=20, marker='o')
+
+        # Plot obstacles
+        u_s = np.linspace(0, 2 * np.pi, 20)
+        v_s = np.linspace(0,     np.pi, 20)
+        xs  = np.outer(np.cos(u_s), np.sin(v_s))
+        ys  = np.outer(np.sin(u_s), np.sin(v_s))
+        zs  = np.outer(np.ones_like(u_s), np.cos(v_s))
+
+        for obs in obstacles:
+            center = obs.center.detach().cpu().numpy()  # (3,)
+            cx, cy, cz = center[0], center[1], center[2]
+            r = obs.radius
+            eps = obs.epsilon
+
+            # 3D obstacle sphere
+            ax.plot_wireframe(cx + r * xs,
+                              cy + r * ys,
+                              cz + r * zs,
+                              color='red', alpha=0.25, linewidth=0.5)
+            # Safety margin
+            ax.plot_wireframe(cx + (r + eps) * xs,
+                              cy + (r + eps) * ys,
+                              cz + (r + eps) * zs,
+                              color='black', alpha=0.10, linewidth=0.5)
+
+            # 2D circles (bird's-eye view)
+            circle = plt.Circle((cx, cy), r, color='red', alpha=0.25)
+            safe_circle = plt.Circle((cx, cy), r + eps,
+                                     color='black', fill=False, alpha=0.4, linewidth=1)
+            ax2.add_patch(circle)
+            ax2.add_patch(safe_circle)
+
+        # Plot targets
+        tgt = p_target.detach().cpu().numpy()  # (n_agent, 3)
+        ax.scatter(tgt[:, 0], tgt[:, 1], tgt[:, 2],
+                   c='green', s=100, marker='X', label='Target', zorder=5)
+        ax2.scatter(tgt[:, 0], tgt[:, 1],
+                    c='green', s=100, marker='X', label='Target', zorder=5)
+
+        # Formatting
+        ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
+        ax.set_title(title)
+        ax.legend()
+        ax.set_xlim(-0.5, 3.5)
+        ax.set_ylim(-1, 4)
+        ax.set_zlim(0, 3)
+        ax.view_init(azim=45)
+
+        ax2.set_xlabel('X'); ax2.set_ylabel('Y')
+        ax2.set_title("Bird's-eye view")
+        ax2.set_aspect('equal')
+        ax2.legend()
+        ax2.set_xlim(-0.5, 3.5)
+        ax2.set_ylim(-1, 4)
+
+        plt.tight_layout()
+        plt.savefig(save_path, bbox_inches="tight", dpi=400)
+        plt.close()
 
     def __repr__(self):
         return (f"Quadrotor(n_agent={self.n_agent}, mass={self.mass}, "
