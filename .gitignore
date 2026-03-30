@@ -11,3 +11,4 @@ test_visualization_50.py
 /slurm_logs/
 models/config_cvxpy.json
 CVXPyLayers/slurm_logs/
+TRAINING_EXPLANATION.md

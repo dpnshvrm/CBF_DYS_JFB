@@ -41,7 +41,7 @@ def train_quadrotor(args):
     print("="*70)
 
     # Quadrotor parameters (matching train.py setup)
-    n_agent = 6
+    n_agent = 1
     mass = 0.5
     gravity = 1.0
     T_hover = mass * gravity
@@ -56,9 +56,9 @@ def train_quadrotor(args):
     print(f"State dim: {dynamics.state_dim}, Control dim: {dynamics.control_dim}")
     print(f"Relative degree: {dynamics.relative_degree}")
 
-    # Time parameters
+    # Time parameters - Reduce timesteps for faster training
     T = 10.0
-    dt = 0.2
+    dt = 0.4  # Increase dt (was 0.2) -> fewer timesteps
     num_steps = int(T / dt)
     print(f"\nTime horizon: T={T}s, dt={dt}s, steps={num_steps}")
 
@@ -110,26 +110,26 @@ def train_quadrotor(args):
         dynamics=dynamics,
         obstacles=obstacles,
         alpha=cbf_alpha,
-        verbose=True  # Enable verbose warnings for degeneracy
+        verbose=False  # Enable verbose warnings for degeneracy
     )
     print(f"\nCBF Controller: {cbf_controller}")
 
-    # Cost weights - VERY conservative schedule for CVXPyLayers
+    # Cost weights - FIXED like double integrator (no scheduling!)
+    # Scheduling was preventing convergence - policy couldn't learn with moving target
     alpha_running = 1.0
-    alpha_terminal = 20.0  # Start at 20
-    alpha_terminal_final = 30.0  # Lower max (CVXPyLayers is sensitive)
-    alpha_sched_step = 5.0  # Increase by 5
-    alpha_sched_every = 100  # Much slower: every 100 epochs (was 20)
+    alpha_terminal = 100.0  # FIXED at 100 (like double integrator)
+    alpha_terminal_final = 100.0  # No scheduling
+    alpha_sched_step = 0.0  # Disabled
+    alpha_sched_every = 999999  # Disabled
     weight_decay = 1e-3
-    print(f"\nCost weights: running={alpha_running}, terminal={alpha_terminal} (initial)")
-    print(f"Alpha terminal schedule: +{alpha_sched_step} every {alpha_sched_every} epochs, max={alpha_terminal_final}")
+    print(f"\nCost weights: running={alpha_running}, terminal={alpha_terminal} (FIXED, no scheduling)")
 
-    # Training parameters - Conservative settings
+    # Training parameters - Match double integrator success
     num_epochs = args.epochs
-    learning_rate = args.lr if args.lr != 0.001 else 1e-4  # Conservative LR
+    learning_rate = args.lr if args.lr != 0.001 else 1e-3  # Higher LR like double int (was 1e-4)
     lr_decay_epoch = args.lr_decay
-    batch_size = 32
-    z0_std = 4e-2  # Match train.py
+    batch_size = 64  # Larger like double int (was 32)
+    z0_std = 4e-2
     log_every = 1
     plot_freq = 100
 
@@ -257,12 +257,24 @@ def train_quadrotor(args):
             if epoch % plot_freq == 0:
                 traj[:, :, t_step + 1] = x
 
-            # Running cost
-            running_cost += dt * 0.5 * (u_safe ** 2).sum(dim=-1).mean()
+            # Running cost - control effort + velocity penalty (match train.py)
+            vel_penalty = 0.5 * x.reshape(batch_size, n_agent, 12)[:, :, 6:9].pow(2).sum(dim=(1, 2))
+            running_cost += dt * (0.5 * (u_safe ** 2).sum(dim=-1) + 2.0 * vel_penalty).mean()
 
-        # Terminal cost
-        position_error = (x - target_state).pow(2).sum(dim=-1).mean()
-        terminal_cost = position_error
+        # Terminal cost - Match train.py formulation
+        # Separate penalties for position, angles, velocities, angular velocities
+        x_reshaped = x.reshape(batch_size, n_agent, 12)
+        pos = x_reshaped[:, :, 0:3]      # [batch, n_agent, 3]
+        angles = x_reshaped[:, :, 3:6]   # [batch, n_agent, 3]
+        vel = x_reshaped[:, :, 6:9]      # [batch, n_agent, 3]
+        ang_vel = x_reshaped[:, :, 9:12] # [batch, n_agent, 3]
+
+        terminal_cost = (
+            0.5 * ((pos - p_target.unsqueeze(0)) ** 2).sum(dim=-1).sum(dim=-1) +
+            0.5 * vel.pow(2).sum(dim=-1).sum(dim=-1) +
+            0.5 * angles.pow(2).sum(dim=-1).sum(dim=-1) +
+            0.5 * ang_vel.pow(2).sum(dim=-1).sum(dim=-1)
+        ).mean()
 
         # Total cost (use _alpha_terminal for scheduling)
         total_cost = alpha_running * running_cost + _alpha_terminal * terminal_cost
@@ -317,10 +329,8 @@ def train_quadrotor(args):
             )
             tqdm.write(f"  Saved to: {plot_path}")
 
-        # Update terminal cost weight (Conservative schedule from README)
-        if epoch % alpha_sched_every == 0 and _alpha_terminal < alpha_terminal_final:
-            _alpha_terminal += alpha_sched_step
-            tqdm.write(f"  → alpha_terminal: {_alpha_terminal:.1f}")
+        # Alpha terminal scheduling disabled (using fixed weight like double integrator)
+        # Scheduling was preventing convergence - keeping it fixed at {alpha_terminal}
 
         # Learning rate decay
         if epoch % lr_decay_epoch == 0:

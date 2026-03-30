@@ -129,7 +129,15 @@ class CBFQPController:
             u_safe: Safe control (batch_size, control_dim)
         """
         batch_size = x.shape[0]
-        solver_args = {"solve_method": "CLARABEL"}
+
+        # IMPORTANT: CVXPyLayers differentiation ONLY works with SCS solver!
+        # Configure SCS for speed vs accuracy tradeoff
+        solver_args = {
+            "solve_method": "SCS",
+            "eps": 1e-4,  # Tolerance (default, balances speed/accuracy)
+            "max_iters": 2500,  # Default iterations (reduced from 5000 for speed)
+            "acceleration_lookback": 10,  # SCS 2.X stability parameter
+        }
         # Compute CBF constraint parameters for each obstacle
         A_cbf_list = []
         b_cbf_list = []
