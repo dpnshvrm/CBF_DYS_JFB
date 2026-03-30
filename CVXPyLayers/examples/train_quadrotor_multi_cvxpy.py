@@ -114,22 +114,22 @@ def train_quadrotor(args):
     )
     print(f"\nCBF Controller: {cbf_controller}")
 
-    # Cost weights - FIXED like double integrator (no scheduling!)
-    # Scheduling was preventing convergence - policy couldn't learn with moving target
+    # Cost weights - Start VERY low for CVXPyLayers stability
     alpha_running = 1.0
-    alpha_terminal = 100.0  # FIXED at 100 (like double integrator)
-    alpha_terminal_final = 100.0  # No scheduling
-    alpha_sched_step = 0.0  # Disabled
-    alpha_sched_every = 999999  # Disabled
+    alpha_terminal = 5.0  # Start VERY low (was 100, way too high!)
+    alpha_terminal_final = 50.0  # Conservative max (was 100)
+    alpha_sched_step = 5.0  # Increase by 5
+    alpha_sched_every = 100  # Slow schedule
     weight_decay = 1e-3
-    print(f"\nCost weights: running={alpha_running}, terminal={alpha_terminal} (FIXED, no scheduling)")
+    print(f"\nCost weights: running={alpha_running}, terminal={alpha_terminal} → {alpha_terminal_final}")
+    print(f"Alpha schedule: +{alpha_sched_step} every {alpha_sched_every} epochs")
 
-    # Training parameters - Match double integrator success
+    # Training parameters - VERY conservative for CVXPyLayers
     num_epochs = args.epochs
-    learning_rate = args.lr if args.lr != 0.001 else 1e-3  # Higher LR like double int (was 1e-4)
+    learning_rate = args.lr if args.lr != 0.001 else 1e-5  # MUCH lower (was 1e-3, exploded!)
     lr_decay_epoch = args.lr_decay
-    batch_size = 64  # Larger like double int (was 32)
-    z0_std = 4e-2
+    batch_size = 16  # Small batch (was 64, too large)
+    z0_std = 2e-2  # Less noise (was 4e-2)
     log_every = 1
     plot_freq = 100
 
@@ -329,8 +329,10 @@ def train_quadrotor(args):
             )
             tqdm.write(f"  Saved to: {plot_path}")
 
-        # Alpha terminal scheduling disabled (using fixed weight like double integrator)
-        # Scheduling was preventing convergence - keeping it fixed at {alpha_terminal}
+        # Update alpha_terminal (now that we start from 5.0, scheduling is safe)
+        if epoch % alpha_sched_every == 0 and _alpha_terminal < alpha_terminal_final:
+            _alpha_terminal += alpha_sched_step
+            tqdm.write(f"  → alpha_terminal: {_alpha_terminal:.1f}")
 
         # Learning rate decay
         if epoch % lr_decay_epoch == 0:
