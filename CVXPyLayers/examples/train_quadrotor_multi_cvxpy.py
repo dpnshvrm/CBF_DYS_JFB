@@ -109,7 +109,8 @@ def train_quadrotor(args):
     cbf_controller = CBFQPController(
         dynamics=dynamics,
         obstacles=obstacles,
-        alpha=cbf_alpha
+        alpha=cbf_alpha,
+        verbose=True  # Enable verbose warnings for degeneracy
     )
     print(f"\nCBF Controller: {cbf_controller}")
 

@@ -80,7 +80,7 @@ class CBFQPController:
     all CBF constraints.
     """
 
-    def __init__(self, dynamics, obstacles, alpha):
+    def __init__(self, dynamics, obstacles, alpha, verbose=False):
         """
         Initialize CBF-QP controller.
 
@@ -95,6 +95,7 @@ class CBFQPController:
         self.obstacles = obstacles
         self.alpha = alpha
         self.num_obstacles = len(obstacles)
+        self.verbose = verbose
 
         # Determine total number of constraints (for multi-agent, multiply by n_agent)
         # Check if obstacles have n_agent attribute (multi-agent case)
@@ -128,7 +129,7 @@ class CBFQPController:
             u_safe: Safe control (batch_size, control_dim)
         """
         batch_size = x.shape[0]
-
+        solver_args = {"solve_method": "CLARABEL"}
         # Compute CBF constraint parameters for each obstacle
         A_cbf_list = []
         b_cbf_list = []
@@ -137,11 +138,24 @@ class CBFQPController:
             A_cbf, b_cbf = obstacle.compute_cbf_constraint(x, self.dynamics, self.alpha)
 
             # Handle multi-agent constraints: flatten (batch, n_agent, ...) into separate constraints
-            if A_cbf.dim() == 3:  # Multi-agent case: (batch, n_agent, control_dim)
-                n_agent = A_cbf.shape[1]
-                for i in range(n_agent):
-                    A_cbf_list.append(A_cbf[:, i, :])  # (batch, control_dim)
-                    b_cbf_list.append(b_cbf[:, i])      # (batch,)
+            if A_cbf.dim() == 3: 
+                # Multi-agent: unpack per-agent rows
+                for i in range(A_cbf.shape[1]):
+                    A_i = A_cbf[:, i, :]  # (batch, 4*n_agent)
+                    b_i = b_cbf[:, i]     # (batch,)
+ 
+                    # ── Degeneracy warning ──────────────────────────────────
+                    if self.verbose:
+                        coeff = A_cbf[:, i, 4*i]  # thrust coefficient for agent i
+                        if coeff.abs().max().item() < 1e-4:
+                            print(
+                                f"[CBF] WARNING: A_cbf degenerate for agent {i}, "
+                                f"obstacle {obstacle}. max|coeff|="
+                                f"{coeff.abs().max().item():.2e}"
+                            )
+ 
+                    A_cbf_list.append(A_i)
+                    b_cbf_list.append(b_i)
             else:  # Single-agent case: (batch, control_dim)
                 A_cbf_list.append(A_cbf)
                 b_cbf_list.append(b_cbf)
@@ -156,7 +170,7 @@ class CBFQPController:
             qp_params.append(b.cpu())
 
         # Solve QP (on CPU)
-        u_safe, = self.qp_layer(*qp_params)
+        u_safe, = self.qp_layer(*qp_params, solver_args=solver_args)
 
         # Move result back to original device
         return u_safe.to(device)
