@@ -10,6 +10,7 @@ from .circular_obstacle import (
     CircularObstacle1,
     CircularObstacle2
 )
+from .spherical_obstacle import SphericalObstacle
 
 __all__ = [
     'BarrierFunction',
@@ -18,4 +19,5 @@ __all__ = [
     'CircularObstacle',
     'CircularObstacle1',
     'CircularObstacle2',
+    'SphericalObstacle',
 ]
