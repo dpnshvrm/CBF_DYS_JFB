@@ -133,6 +133,7 @@ def train_quadrotor(args):
     z0_std = 2e-2  # Less noise
     log_every = 1
     plot_freq = 100
+    grad_clip_norm = 100.0  # CRITICAL for multi-agent (5+) stability with CVXPyLayers
 
     print(f"\nTraining: epochs={num_epochs}, batch_size={batch_size}, lr={learning_rate}")
     print(f"LR decay at epoch {lr_decay_epoch}")
@@ -178,6 +179,7 @@ def train_quadrotor(args):
         'lr_decay_epoch': lr_decay_epoch,
         'batch_size': batch_size,
         'z0_std': z0_std,
+        'grad_clip_norm': grad_clip_norm,
         'hidden_dim': args.hidden_dim,
         'n_blocks': args.n_blocks,
         'num_params': num_params,
@@ -285,12 +287,15 @@ def train_quadrotor(args):
         # Backward
         total_cost.backward()
 
-        # Gradient norm
+        # Gradient norm (before clipping - for monitoring)
         grad_norm = 0.0
         for param in policy.parameters():
             if param.grad is not None:
                 grad_norm += param.grad.data.norm(2).item() ** 2
         grad_norm = grad_norm ** 0.5
+
+        # Gradient clipping (CRITICAL for multi-agent stability)
+        torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip_norm)
 
         optimizer.step()
 
