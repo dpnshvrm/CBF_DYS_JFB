@@ -168,12 +168,24 @@ class CBFQPController:
                 A_cbf_list.append(A_cbf)
                 b_cbf_list.append(b_cbf)
 
+        # Normalize constraints: â·u ≥ b̂ where ‖â‖ = 1
+        # This prevents numerically degenerate constraints when h is large
+        # (unbounded/infeasible QP issues)
+        A_cbf_normalized = []
+        b_cbf_normalized = []
+        for A, b in zip(A_cbf_list, b_cbf_list):
+            A_norm = A.norm(dim=-1, keepdim=True).clamp(min=1e-4)  # (batch, 1)
+            A_normalized = A / A_norm  # Unit-norm row
+            b_normalized = b / A_norm.squeeze(-1)  # Scale b consistently
+            A_cbf_normalized.append(A_normalized)
+            b_cbf_normalized.append(b_normalized)
+
         # Flatten parameters for QP layer
         # [u_desired, A_cbf_1, b_cbf_1, A_cbf_2, b_cbf_2, ...]
         # Move to CPU for CVXPy solvers (they use numpy)
         device = u_desired.device
         qp_params = [u_desired.cpu()]
-        for A, b in zip(A_cbf_list, b_cbf_list):
+        for A, b in zip(A_cbf_normalized, b_cbf_normalized):
             qp_params.append(A.cpu())
             qp_params.append(b.cpu())
 

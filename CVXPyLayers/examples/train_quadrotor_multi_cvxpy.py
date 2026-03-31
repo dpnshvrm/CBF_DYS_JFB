@@ -42,7 +42,7 @@ def train_quadrotor(args):
     print("="*70)
 
     # Quadrotor parameters (matching train.py setup)
-    n_agent = 1
+    n_agent = 5
     mass = 0.5
     gravity = 1.0
     T_hover = mass * gravity

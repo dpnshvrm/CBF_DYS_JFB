@@ -56,9 +56,15 @@ class PolicyNetwork(nn.Module):
             layers.append(act_fn())
 
         # Output layer
-        layers.append(nn.Linear(hidden_dim, control_dim))
+        output_layer = nn.Linear(hidden_dim, control_dim)
+        layers.append(output_layer)
 
         self.network = nn.Sequential(*layers)
+
+        # Small output initialization (prevents large initial u_desired)
+        # Policy starts near-zero, so u_desired ≈ hover_bias (physically reasonable)
+        nn.init.uniform_(output_layer.weight, -0.01, 0.01)
+        nn.init.zeros_(output_layer.bias)
 
     def forward(self, state):
         """
