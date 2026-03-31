@@ -17,6 +17,7 @@ import argparse
 import pandas as pd
 import json
 from pathlib import Path
+import time
 
 from dynamics import Quadrotor
 from barriers import SphericalObstacle
@@ -217,6 +218,8 @@ def train_quadrotor(args):
     plot_dir.mkdir(exist_ok=True)
 
     for epoch in tqdm(range(1, num_epochs + 1), desc="Training"):
+        start_time = time.time()
+
         optimizer.zero_grad()
 
         # Sample initial conditions (add noise)
@@ -312,9 +315,11 @@ def train_quadrotor(args):
 
         # Logging
         if epoch % log_every == 0:
+            epoch_time = time.time() - start_time
             tqdm.write(f"epoch {epoch:4d} total={total_cost.item():.4e} "
                       f"L={running_cost.item():.4e} G={terminal_cost.item():.4e} "
-                      f"alpha_t={_alpha_terminal:.1f} h_min={min_barrier:.2e} grad={grad_norm:.2e}")
+                      f"alpha_t={_alpha_terminal:.1f} h_min={min_barrier:.2e} grad={grad_norm:.2e} "
+                      f"t={epoch_time:.2f}s")
 
         # Plotting
         if epoch % plot_freq == 0:

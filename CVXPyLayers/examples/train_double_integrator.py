@@ -10,7 +10,8 @@ This matches your naive_soft_for_double_int.py setup but with HARD constraints!
 """
 
 import sys
-sys.path.append('..')
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from training import TrainingConfig, CBFTrainer
 from visualization import plot_trajectories

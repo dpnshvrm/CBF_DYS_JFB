@@ -108,12 +108,21 @@ class CBFTrainer:
         controls = []
 
         z = z0
-        for _ in range(self.config.num_steps):
+        for step in range(self.config.num_steps):
             # Policy proposes control
             u_desired = self.policy(z)
 
             # CBF-QP filters for safety
-            u_safe = self.cbf_controller.filter_control(z, u_desired)
+            try:
+                u_safe = self.cbf_controller.filter_control(z, u_desired)
+            except Exception as e:
+                # QP infeasible - fallback to desired control
+                if "infeasible" in str(e).lower() or "unbounded" in str(e).lower():
+                    print(f"\n  Warning: CBF-QP failed at step {step}: {e}")
+                    print(f"  Falling back to desired control (unsafe!)")
+                    u_safe = u_desired
+                else:
+                    raise e
 
             # Simulate dynamics
             z = self.dynamics.step(z, u_safe, self.config.dt)
