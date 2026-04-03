@@ -73,6 +73,7 @@ class TrainingConfig:
     batch_size: int = 32
     learning_rate: float = 1e-3
     initial_state_std: float = 0.3  # Noise for sampling initial states
+    grad_clip_norm: float = 1.0     # Max gradient norm (0 = no clipping)
 
     # ========================================================================
     # Computation

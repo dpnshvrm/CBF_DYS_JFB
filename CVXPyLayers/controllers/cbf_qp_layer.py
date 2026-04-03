@@ -131,19 +131,28 @@ class CBFQPController:
         batch_size = x.shape[0]
 
         # IMPORTANT: CVXPyLayers differentiation ONLY works with SCS solver!
-        # Configure SCS for speed vs accuracy tradeoff
+        # eps=1e-3: SCS convergence is the bottleneck, not gradient accuracy (IFT
+        #   is already an approximation).  1e-3 avoids "Solved/Inaccurate" reliably.
+        # max_iters=10000: sufficient for 20-var/15-constraint QP at eps=1e-3.
         solver_args = {
             "solve_method": "SCS",
-            "eps": 1e-4,  # Tolerance (default, balances speed/accuracy)
-            "max_iters": 2500,  # Default iterations (reduced from 5000 for speed)
-            "acceleration_lookback": 10,  # SCS 2.X stability parameter
+            "eps": 1e-3,
+            "max_iters": 10000,
+            "acceleration_lookback": 10,
         }
         # Compute CBF constraint parameters for each obstacle
         A_cbf_list = []
         b_cbf_list = []
 
+        # Detach x before computing CBF matrices (matches reference quadcopter_multi.py).
+        # K and d are treated as constants in the QP backward pass so that gradients
+        # flow only through u_desired → u_safe (not through x → A,b → u_safe).
+        # Differentiating through the constraint parameters across 25 steps compounds
+        # Jacobians that empirically kill the gradient signal.
+        x_cbf = x.detach()
+
         for obstacle in self.obstacles:
-            A_cbf, b_cbf = obstacle.compute_cbf_constraint(x, self.dynamics, self.alpha)
+            A_cbf, b_cbf = obstacle.compute_cbf_constraint(x_cbf, self.dynamics, self.alpha)
 
             # Handle multi-agent constraints: flatten (batch, n_agent, ...) into separate constraints
             if A_cbf.dim() == 3: 
@@ -168,32 +177,22 @@ class CBFQPController:
                 A_cbf_list.append(A_cbf)
                 b_cbf_list.append(b_cbf)
 
-        # Normalize constraints: â·u ≥ b̂ where ‖â‖ = 1
-        # This prevents numerically degenerate constraints when h is large
-        # (unbounded/infeasible QP issues)
-        A_cbf_normalized = []
-        b_cbf_normalized = []
-        for A, b in zip(A_cbf_list, b_cbf_list):
-            A_norm = A.norm(dim=-1, keepdim=True).clamp(min=1e-4)  # (batch, 1)
-            A_normalized = A / A_norm  # Unit-norm row
-            b_normalized = b / A_norm.squeeze(-1)  # Scale b consistently
-            A_cbf_normalized.append(A_normalized)
-            b_cbf_normalized.append(b_normalized)
-
-        # Flatten parameters for QP layer
-        # [u_desired, A_cbf_1, b_cbf_1, A_cbf_2, b_cbf_2, ...]
-        # Move to CPU for CVXPy solvers (they use numpy)
+        # Do NOT manually normalize constraints — dividing b by a near-zero A_norm
+        # (clamped to 1e-4) turns benign slack constraints (b ≈ −55) into extreme
+        # values (b ≈ −550,000).  SCS then sees RHS values spanning six orders of
+        # magnitude, fails to converge, and returns "Solved/Inaccurate" with garbage
+        # u_safe.  SCS has its own internal scaling; pass raw constraints.
         device = u_desired.device
         qp_params = [u_desired.cpu()]
-        for A, b in zip(A_cbf_normalized, b_cbf_normalized):
+        for A, b in zip(A_cbf_list, b_cbf_list):
             qp_params.append(A.cpu())
             qp_params.append(b.cpu())
 
         # Solve QP (on CPU)
         u_safe, = self.qp_layer(*qp_params, solver_args=solver_args)
+        u_safe = u_safe.to(device)
 
-        # Move result back to original device
-        return u_safe.to(device)
+        return u_safe
 
     def __repr__(self):
         if self.n_agent > 1:

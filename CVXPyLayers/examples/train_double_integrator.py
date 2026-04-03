@@ -44,12 +44,13 @@ def main():
 
         # Cost weights
         control_penalty=1.0,
-        terminal_cost_weight=100.0,
+        terminal_cost_weight=1000.0,
 
         # Training
-        num_epochs=100,
+        num_epochs=500,
         batch_size=64,
         learning_rate=1e-3,
+        grad_clip_norm=1.0,
 
         # Saving
         save_path='./models/double_int_three_obs.pth',

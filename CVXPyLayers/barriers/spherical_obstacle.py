@@ -94,7 +94,8 @@ class SphericalObstacle(BarrierFunction):
         dist_sq = (dp ** 2).sum(dim=-1)  # (batch, n_agent)
 
         # Barrier: positive inside safe region
-        h_vals = dist_sq - (self.radius + self.epsilon) ** 2
+        # Match reference: h = ||p-c||² - r² - ε²  (NOT -(r+ε)²)
+        h_vals = dist_sq - self.radius ** 2 - self.epsilon ** 2
 
         return h_vals
 
@@ -132,7 +133,7 @@ class SphericalObstacle(BarrierFunction):
 
         # Compute h
         dp = positions - center.view(1, 1, 3)
-        h_vals = (dp ** 2).sum(dim=-1) - (self.radius + self.epsilon) ** 2
+        h_vals = (dp ** 2).sum(dim=-1) - self.radius ** 2 - self.epsilon ** 2
 
         # Compute Lf h = ∂h/∂x · f(x)
         # ∂h/∂p = 2(p - c), f(x) gives velocity
@@ -166,8 +167,11 @@ class SphericalObstacle(BarrierFunction):
             A_cbf[:, i, 4*i] = (2.0 / self.dynamics.mass) * \
                               (dp[:, i, :] * thrust_dir[:, i, :]).sum(dim=-1)
 
-        # RHS: -Lf² h - α₂ ψ₁
-        b_cbf = -Lf2_h - alpha2 * psi1  # (batch, n_agent)
+        # RHS: -Lf² h - α₁ Lf h - α₂ ψ₁
+        # Full HOCBF derivation: ψ̇₁ + α₂ψ₁ ≥ 0
+        #   ψ̇₁ = Lf²h + LgLf h·u + α₁·Lf h   (since Lg h = 0 for rel-deg-2)
+        #   → LgLf h·u ≥ -(Lf²h + α₁·Lf h + α₂·ψ₁)
+        b_cbf = -Lf2_h - alpha1 * Lf_h - alpha2 * psi1  # (batch, n_agent)
 
         return A_cbf, b_cbf
 

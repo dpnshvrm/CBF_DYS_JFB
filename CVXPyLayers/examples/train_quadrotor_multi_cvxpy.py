@@ -57,10 +57,10 @@ def train_quadrotor(args):
     print(f"State dim: {dynamics.state_dim}, Control dim: {dynamics.control_dim}")
     print(f"Relative degree: {dynamics.relative_degree}")
 
-    # Time parameters - Reduce timesteps for faster training
+    # Time parameters - match reference
     T = 10.0
-    dt = 0.4  # Increase dt (was 0.2) -> fewer timesteps
-    num_steps = int(T / dt)
+    dt = 0.2  # Match reference quadcopter_multi / train.py
+    num_steps = int(T / dt)  # 50 steps
     print(f"\nTime horizon: T={T}s, dt={dt}s, steps={num_steps}")
 
     # Obstacles (3D spherical)
@@ -87,8 +87,7 @@ def train_quadrotor(args):
 
     # Target positions (agents in a line at y=3.5, z=1.0)
     # Match train.py: x_min=1.1, x_max=1.9 for 5 agents
-    # For 10 agents, adjust range to spread them out more
-    x_min, x_max = 0.8, 2.2
+    x_min, x_max = 1.1, 1.9
     x_positions = torch.linspace(x_min, x_max, n_agent, device=device, dtype=dtype)
     p_target = torch.zeros(n_agent, 3, device=device, dtype=dtype)
     p_target[:, 0] = x_positions
@@ -111,16 +110,16 @@ def train_quadrotor(args):
         dynamics=dynamics,
         obstacles=obstacles,
         alpha=cbf_alpha,
-        verbose=False  # Enable verbose warnings for degeneracy
+        verbose=False,
     )
     print(f"\nCBF Controller: {cbf_controller}")
 
-    # Cost weights - Start VERY low for CVXPyLayers stability
+    # Cost weights - match reference train.py (quadcopter_multi)
     alpha_running = 1.0
-    alpha_terminal = 5.0  # Start VERY low (was 100, way too high!)
-    alpha_terminal_final = 50.0  # Conservative max (was 100)
-    alpha_sched_step = 5.0  # Increase by 5
-    alpha_sched_every = 100  # Slow schedule
+    alpha_terminal = 200.0        # Higher start since horizon is shorter (T=2s)
+    alpha_terminal_final = 200.0  # Anneal up over training
+    alpha_sched_step = 5.0      # Match reference +5
+    alpha_sched_every = 20      # Match reference every 20 epochs
     weight_decay = 1e-3
     print(f"\nCost weights: running={alpha_running}, terminal={alpha_terminal} → {alpha_terminal_final}")
     print(f"Alpha schedule: +{alpha_sched_step} every {alpha_sched_every} epochs")
@@ -130,10 +129,14 @@ def train_quadrotor(args):
     learning_rate = args.lr if args.lr != 0.001 else 1e-4  # Increase from 1e-5 (was stuck)
     lr_decay_epoch = args.lr_decay
     batch_size = 16  # Small batch
-    z0_std = 2e-2  # Less noise
+    z0_std = 4e-2  # Match reference quadcopter_multi
     log_every = 1
-    plot_freq = 100
+    plot_freq = 50
     grad_clip_norm = 100.0  # CRITICAL for multi-agent (5+) stability with CVXPyLayers
+
+    # Output scaling: bound thrust deviation and torques (match reference train.py u_fn)
+    T_dev_scale = 0.5   # thrust deviation ∈ [-0.5, 0.5] around hover
+    tau_scale = 0.1     # torques ∈ [-0.1, 0.1]
 
     print(f"\nTraining: epochs={num_epochs}, batch_size={batch_size}, lr={learning_rate}")
     print(f"LR decay at epoch {lr_decay_epoch}")
@@ -240,13 +243,17 @@ def train_quadrotor(args):
             traj[:, :, 0] = z0_batch
 
         for t_step in range(num_steps):
-            # Policy outputs desired control
-            u_desired = policy(x)
+            # Policy outputs raw control deviations; scale + clamp with tanh (match reference)
+            u_raw = policy(x).reshape(batch_size, n_agent, 4)
+            u_policy = torch.cat([
+                T_dev_scale * torch.tanh(u_raw[:, :, 0:1]),   # thrust deviation
+                tau_scale   * torch.tanh(u_raw[:, :, 1:4]),   # torques
+            ], dim=-1).reshape(batch_size, dynamics.control_dim)
 
             # Add hover bias
             hover_bias = torch.zeros(dynamics.control_dim, device=device, dtype=dtype)
             hover_bias[::4] = T_hover  # Every 4th element is thrust
-            u_desired = u_desired + hover_bias
+            u_desired = u_policy + hover_bias
 
             # Filter through CBF-QP
             try:
@@ -295,7 +302,8 @@ def train_quadrotor(args):
         grad_norm = grad_norm ** 0.5
 
         # Gradient clipping (CRITICAL for multi-agent stability)
-        torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip_norm)
+        if args.grad_clip:
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip_norm)
 
         optimizer.step()
 
@@ -389,10 +397,14 @@ def train_quadrotor(args):
         traj_final[:, :, 0] = z0_batch
 
         for t_step in range(num_steps):
-            u_desired = policy(x)
+            u_raw = policy(x).reshape(1, n_agent, 4)
+            u_policy = torch.cat([
+                T_dev_scale * torch.tanh(u_raw[:, :, 0:1]),
+                tau_scale   * torch.tanh(u_raw[:, :, 1:4]),
+            ], dim=-1).reshape(1, dynamics.control_dim)
             hover_bias = torch.zeros(dynamics.control_dim, device=device, dtype=dtype)
             hover_bias[::4] = T_hover
-            u_desired = u_desired + hover_bias
+            u_desired = u_policy + hover_bias
 
             try:
                 u_safe = cbf_controller.filter_control(x, u_desired)
@@ -425,6 +437,7 @@ if __name__ == "__main__":
     parser.add_argument("--hidden_dim", type=int, default=64)
     parser.add_argument("--n_blocks", type=int, default=3)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--grad_clip", action='store_true', default=True)
     args = parser.parse_args()
 
     train_quadrotor(args)

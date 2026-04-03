@@ -189,6 +189,11 @@ class CBFTrainer:
         # Backward pass
         self.optimizer.zero_grad()
         loss.backward()
+
+        # Gradient clipping (prevents exploding gradients through long rollouts)
+        if self.config.grad_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.config.grad_clip_norm)
+
         self.optimizer.step()
 
         return loss.item(), running_cost.item(), terminal_cost.item()

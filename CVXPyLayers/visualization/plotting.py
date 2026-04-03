@@ -4,6 +4,7 @@ Visualization utilities for CBF trajectories.
 Works for both single and double integrator systems.
 """
 
+import math
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -58,9 +59,11 @@ def plot_trajectories(
         ax.add_patch(circle_inner)
 
         # Outer circle (safety boundary)
+        # h = ||p-c||² - r² - ε ≥ 0  →  safe radius = sqrt(r² + ε)
+        safe_radius = math.sqrt(obstacle.radius ** 2 + obstacle.epsilon)
         circle_outer = Circle(
             obstacle.center.cpu().numpy(),
-            obstacle.radius + obstacle.epsilon,
+            safe_radius,
             color='red',
             alpha=0.2,
             linestyle='--',

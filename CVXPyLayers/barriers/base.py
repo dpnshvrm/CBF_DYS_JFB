@@ -142,11 +142,11 @@ class RelativeDegree2Barrier(BarrierFunction):
     Auxiliary barrier:
         h₁ = ḣ₀ + α₁(h₀)
 
-    HOCBF constraint:
-        ḧ₀ + α₂(h₁) ≥ 0
+    HOCBF constraint (from ψ̇₁ + α₂ψ₁ ≥ 0):
+        Lf²h + LgLf h·u + α₁·Lf h + α₂·ψ₁ ≥ 0
 
     QP form:
-        (Lg Lf h₀) @ u ≥ -Lf² h₀ - α₂(h₁)
+        (Lg Lf h₀) @ u ≥ -Lf² h₀ - α₁·Lf h₀ - α₂(h₁)
 
     Computation:
         ḣ₀ = ∇h₀ · ẋ = ∇h₀ · (f + gu) = ∇h₀ · f + ∇h₀ · g · u
@@ -206,6 +206,6 @@ class RelativeDegree2Barrier(BarrierFunction):
 
         # QP constraint
         A_cbf = Lg_Lf_h0
-        b_cbf = -Lf2_h0 - alpha2 * h1
+        b_cbf = -Lf2_h0 - alpha1 * h0_dot - alpha2 * h1
 
         return A_cbf, b_cbf
