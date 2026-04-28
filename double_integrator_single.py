@@ -233,5 +233,5 @@ def plot_trajectory(traj, obstacle_centers, obstacle_radius, p_target, title="Tr
     plt.grid()
     plt.axis('equal')
     plt.savefig("trajs.png", bbox_inches="tight", dpi=400)
-    
+    plt.close()
     

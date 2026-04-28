@@ -22,6 +22,7 @@ parser.add_argument("--lr_decay", type=int, default=600)
 parser.add_argument("--load_path", type=str, default=None)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--grad_mode", choices=["jfb", "ad"], default="jfb")
+parser.add_argument("--plot", action="store_true")
 
 parser.add_argument("--hidden_dim", type=int, default=64)
 parser.add_argument("--n_blocks", type=int, default=3)
@@ -249,7 +250,7 @@ for epoch in range(1, n_epochs+1):
                   f"  gpu_mem={gpu_max_memory_MB:.1f}MB")
 
     if problem == "double_integrator_single":
-        if epoch % plot_freq == 0:
+        if args.plot and (epoch % plot_freq == 0):
             print("  Plotting trajectory...")
             plot_trajectory(traj.cpu().numpy(),
                         [obstacle_center_1.cpu().numpy(), obstacle_center_2.cpu().numpy(), obstacle_center_3.cpu().numpy()],
@@ -258,7 +259,7 @@ for epoch in range(1, n_epochs+1):
             alpha_terminal += 5
             print("new alpha_terminal: ", alpha_terminal)
     elif problem == "double_integrator_multi":
-        if epoch % plot_freq == 0:
+        if args.plot and (epoch % plot_freq == 0):
             print("  Plotting trajectory...")
             plot_trajectory(traj.cpu().numpy(),
                           [obstacle_center_1.cpu().numpy(), obstacle_center_2.cpu().numpy(), obstacle_center_3.cpu().numpy()],
@@ -269,7 +270,7 @@ for epoch in range(1, n_epochs+1):
                 alpha_terminal += 5
                 print("new alpha_terminal: ", alpha_terminal)
     elif problem == "single_integrator_swarm":
-        if epoch % plot_freq == 0:
+        if args.plot and (epoch % plot_freq == 0):
             print("  Plotting trajectory...")
             plot_trajectory(traj, cyl1_center_xy, cyl1_radius, cyl2_center_xy, cyl2_radius, p_target, eps_safe=eps_safe)
 
@@ -278,7 +279,7 @@ for epoch in range(1, n_epochs+1):
                 alpha_terminal += 5
                 print("new alpha_terminal: ", alpha_terminal)
     elif problem == "quadcopter_multi" or problem == "quadcopter_swarm":
-        if epoch % plot_freq == 0:
+        if args.plot and (epoch % plot_freq == 0):
             print("  Plotting trajectory...")
             plot_trajectory(traj.cpu().numpy(),
                           [obstacle_center_1.cpu().numpy(), obstacle_center_2.cpu().numpy(), obstacle_center_3.cpu().numpy()],
