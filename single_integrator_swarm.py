@@ -282,5 +282,5 @@ def plot_trajectory(traj, cyl1_center_xy, cyl1_radius, cyl2_center_xy, cyl2_radi
 
     plt.tight_layout()
     plt.savefig("trajs.png", bbox_inches="tight", dpi=400)
-    
+    plt.close()
     
