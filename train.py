@@ -15,10 +15,11 @@ import argparse
 
 # parse args
 parser = argparse.ArgumentParser()
-parser.add_argument("--problem", choices=['double_integrator_single', "double_integrator_multi", "single_integrator_swarm", "quadcopter_multi", "quadcopter_swarm"])
+parser.add_argument("--problem", choices=['double_integrator_single', "double_integrator_multi", "single_integrator_swarm", "quadcopter_5", "quadcopter_30", "quadcopter_100"])
 parser.add_argument("--epochs", type=int, default=1000)
 parser.add_argument("--lr", type=float, default=0.001)
 parser.add_argument("--lr_decay", type=int, default=600)
+parser.add_argument("--weight_decay", type=float, default=0.001)
 parser.add_argument("--load_path", type=str, default=None)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--grad_mode", choices=["jfb", "ad"], default="jfb")
@@ -45,10 +46,9 @@ T = 10.0
 dt = 0.2
 num_steps = int(T / dt)
 
-if problem == "double_integrator_single":
-    weight_decay = 1e-4
-else:
-    weight_decay = 1e-3
+weight_decay = args.weight_decay
+
+
 alpha_running = 1
 alpha_terminal = 2e1
 
@@ -109,8 +109,8 @@ elif problem == "single_integrator_swarm":
     net = ControlNet(input_dim=151, hidden_dim=hidden_dim, output_dim=150, n_blocks=n_blocks).to(device)
     
 
-elif problem == "quadcopter_multi" or problem == "quadcopter_swarm":
-    if problem == "quadcopter_multi":
+elif problem == "quadcopter_5" or problem == "quadcopter_30" or problem == "quadcopter_100":
+    if problem == "quadcopter_5":
         import importlib
         import quadcopter_multi
         quadcopter_multi.n_agent = 5
@@ -132,10 +132,10 @@ elif problem == "quadcopter_multi" or problem == "quadcopter_swarm":
         p_target[:, 0] = x_positions   
         p_target[:, 1] = 3.5          
         p_target[:, 2] = 1.0          
-        alpha_terminal_final = 2e2
+        alpha_terminal_final = 5e2
         z0_std = 4e-2
         
-    elif problem == "quadcopter_swarm":
+    elif problem == "quadcopter_30":
         import importlib
         import quadcopter_multi
         quadcopter_multi.n_agent = 30
@@ -159,7 +159,32 @@ elif problem == "quadcopter_multi" or problem == "quadcopter_swarm":
         alpha_terminal_final = 5e2
         z0_std = 2e-2      
         
+    elif problem == "quadcopter_100":
+        import importlib
+        import quadcopter_multi
+        quadcopter_multi.n_agent = 100
+        importlib.reload(quadcopter_multi)
+
+        from quadcopter_multi import n_agent, m, g, T_hover, STATE_DIM, CONTROL_DIM, split_state, thrust_direction, f, lagrangian, G, barrier_function, evaluate_barriers, psi1_function, evaluate_psi1, construct_cbf_constraints, sample_initial_condition, compute_loss, plot_trajectory
+        
+        obstacle_center_1 = torch.tensor([0.63, 1.0, 1.0]).view(1, 3).to(device)
+        obstacle_center_2 = torch.tensor([1.5, 2.5, 0.8]).view(1, 3).to(device)
+        obstacle_center_3 = torch.tensor([2.37, 1.0, 1.0]).view(1, 3).to(device)
+        obstacle_centers = [obstacle_center_1, obstacle_center_2, obstacle_center_3]
+        obstacle_radius = 0.35
+        eps_safe = 0.15
+
+        p_target     = torch.zeros(n_agent, 3, device=device)
+        x_min, x_max = 0.2, 2.8
+        x_positions = torch.linspace(x_min, x_max, n_agent, device=device)
+        p_target[:, 0] = x_positions   
+        p_target[:, 1] = 3.5          
+        p_target[:, 2] = 1.5 
+        alpha_terminal_final = 5e2
+        z0_std = 1e-2      
+        
     net = ControlNet(input_dim=STATE_DIM + 1, hidden_dim=hidden_dim, output_dim=CONTROL_DIM, n_blocks=n_blocks).to(device)
+    
 
 
 
@@ -170,7 +195,7 @@ print('Number of parameters in control net:', sum(p.numel() for p in net.paramet
 if problem == "double_integrator_single" or problem == "double_integrator_multi" or problem == "single_integrator_swarm":
     def u_fn(z, ti):
         return net(z, ti)
-elif problem == "quadcopter_multi" or problem == "quadcopter_swarm":   
+elif problem == "quadcopter_5" or problem == "quadcopter_30" or problem == "quadcopter_100":   
     T_dev_scale = 0.5    # max thrust deviation from hover  (u ∈ [T_hover - scale, T_hover + scale])
     tau_scale   = 0.1    # max angular acceleration
     def u_fn(z, t):
@@ -192,6 +217,7 @@ barrier_function_history = []
 grad_norm_history = []    
     
     
+best_loss = float("inf")
 for epoch in range(1, n_epochs+1):
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
@@ -265,10 +291,14 @@ for epoch in range(1, n_epochs+1):
                           [obstacle_center_1.cpu().numpy(), obstacle_center_2.cpu().numpy(), obstacle_center_3.cpu().numpy()],
                           obstacle_radius, p_target, eps_safe=eps_safe)
 
-        if epoch % 10 == 0:
-            if alpha_terminal <= 5e2:
+        if epoch % 10 == 0:  
+            if alpha_terminal <= 5e2:  
                 alpha_terminal += 5
                 print("new alpha_terminal: ", alpha_terminal)
+        if alpha_terminal >= 5e2 and total_cost.item() < best_loss:
+            best_loss = total_cost.item()
+            torch.save(net.state_dict(), f"best_control_net_{problem}.pth")
+            print("save best model")
     elif problem == "single_integrator_swarm":
         if args.plot and (epoch % plot_freq == 0):
             print("  Plotting trajectory...")
@@ -278,7 +308,11 @@ for epoch in range(1, n_epochs+1):
             if alpha_terminal <= 5e2:
                 alpha_terminal += 5
                 print("new alpha_terminal: ", alpha_terminal)
-    elif problem == "quadcopter_multi" or problem == "quadcopter_swarm":
+        if alpha_terminal >= 5e2 and total_cost.item() < best_loss:
+            best_loss = total_cost.item()
+            torch.save(net.state_dict(), f"best_control_net_{problem}.pth")
+            print("save best model")
+    elif problem == "quadcopter_5" or problem == "quadcopter_30" or problem == "quadcopter_100":
         if args.plot and (epoch % plot_freq == 0):
             print("  Plotting trajectory...")
             plot_trajectory(traj.cpu().numpy(),
@@ -288,18 +322,24 @@ for epoch in range(1, n_epochs+1):
             if alpha_terminal <= alpha_terminal_final:
                 alpha_terminal += 5
                 print("new alpha_terminal: ", alpha_terminal)
+        if alpha_terminal >= alpha_terminal_final and total_cost.item() < best_loss:
+            best_loss = total_cost.item()
+            torch.save(net.state_dict(), f"best_control_net_{problem}.pth")
+            print("save best model")
                 
     if epoch % lr_decay == 0:  
-            for param_group in optimizer.param_groups:
-                param_group['lr'] *= 0.5
-                print("new lr: ", param_group['lr'])
+        if os.path.exists(f"best_control_net_{problem}.pth"): 
+            net.load_state_dict(torch.load(f"best_control_net_{problem}.pth"))
+        for param_group in optimizer.param_groups:
+            param_group['lr'] *= 0.5
+            print("new lr: ", param_group['lr'])
                 
                 
                 
                 
 print("Training complete.")
-torch.save(net.state_dict(), f"control_net_{problem}.pth")
-print(f"Model saved to control_net_{problem}.pth")   
+torch.save(net.state_dict(), f"final_control_net_{problem}.pth")
+print(f"Model saved to final_control_net_{problem}.pth")   
 
 fig, axes = plt.subplots(1, 2, figsize=(10, 3))
 
