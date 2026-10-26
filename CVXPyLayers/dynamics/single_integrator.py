@@ -39,12 +39,13 @@ class SingleIntegrator(ControlAffineDynamics):
         )
         self.dim = dim
 
-    def f(self, x):
+    def f(self, x, t=0.0):
         """
-        Drift dynamics: f(x) = 0
+        Drift dynamics: f(x, t) = 0  (time-invariant)
 
         Args:
             x: State (batch_size, dim)
+            t: Current time (unused; accepted for interface consistency)
 
         Returns:
             f: Zero drift (batch_size, dim)
@@ -52,12 +53,13 @@ class SingleIntegrator(ControlAffineDynamics):
         batch_size = x.shape[0]
         return torch.zeros(batch_size, self.dim, dtype=x.dtype, device=x.device)
 
-    def g(self, x):
+    def g(self, x, t=0.0):
         """
-        Control matrix: g(x) = I
+        Control matrix: g(x, t) = I  (time-invariant)
 
         Args:
             x: State (batch_size, dim)
+            t: Current time (unused; accepted for interface consistency)
 
         Returns:
             g: Identity matrix (batch_size, dim, dim)
@@ -66,7 +68,7 @@ class SingleIntegrator(ControlAffineDynamics):
         I = torch.eye(self.dim, dtype=x.dtype, device=x.device)
         return I.unsqueeze(0).expand(batch_size, -1, -1)  # (batch, dim, dim)
 
-    def step(self, x, u, dt):
+    def step(self, x, u, dt, t=0.0):
         """
         Euler integration: x_{t+1} = x_t + dt * u
 
@@ -74,6 +76,7 @@ class SingleIntegrator(ControlAffineDynamics):
             x: Current position (batch_size, dim)
             u: Control velocity (batch_size, dim)
             dt: Time step
+            t: Current time (unused; accepted for interface consistency)
 
         Returns:
             x_next: Next position (batch_size, dim)

@@ -8,7 +8,8 @@ from .base import (
 from .circular_obstacle import (
     CircularObstacle,
     CircularObstacle1,
-    CircularObstacle2
+    CircularObstacle2,
+    MultiAgentCircularObstacle2,
 )
 from .spherical_obstacle import SphericalObstacle
 
@@ -19,5 +20,6 @@ __all__ = [
     'CircularObstacle',
     'CircularObstacle1',
     'CircularObstacle2',
+    'MultiAgentCircularObstacle2',
     'SphericalObstacle',
 ]

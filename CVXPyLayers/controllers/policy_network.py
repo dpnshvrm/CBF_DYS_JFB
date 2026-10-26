@@ -9,24 +9,42 @@ import torch.nn as nn
 import os
 
 
+class _ResBlock(nn.Module):
+    """Residual block with SiLU activations — matches reference ControlNet/ResBlock."""
+    def __init__(self, dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.SiLU(),
+            nn.Linear(dim, dim),
+        )
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        return self.act(x + self.net(x))
+
+
 class PolicyNetwork(nn.Module):
     """
-    Multi-layer perceptron for control policy.
+    Neural network policy for control.
 
-    Architecture: state → hidden → hidden → hidden → control
-    Activation: ReLU (or SiLU for smoother gradients)
+    Two architectures selectable via ``activation``:
+
+    * ``'resnet'`` — input_proj → ResBlock × n → output_proj (matches reference
+      ControlNet with residual connections + SiLU).  Best for hard problems like
+      quadrotor.
+    * any other string (``'relu'``, ``'silu'``, ``'tanh'``) — plain MLP.
     """
 
-    def __init__(self, state_dim, control_dim, hidden_dim=64, num_hidden_layers=3, activation='relu'):
+    def __init__(self, state_dim, control_dim, hidden_dim=64, num_hidden_layers=3, activation='relu', use_time=False):
         """
-        Initialize policy network.
-
         Args:
             state_dim: Input dimension (state space)
             control_dim: Output dimension (control space)
             hidden_dim: Hidden layer size
-            num_hidden_layers: Number of hidden layers
-            activation: 'relu' or 'silu' (Swish)
+            num_hidden_layers: Number of hidden layers / residual blocks
+            activation: 'resnet' | 'relu' | 'silu' | 'tanh'
+            use_time: If True, append normalized time t/T as extra input
         """
         super().__init__()
 
@@ -34,49 +52,69 @@ class PolicyNetwork(nn.Module):
         self.control_dim = control_dim
         self.hidden_dim = hidden_dim
         self.num_hidden_layers = num_hidden_layers
+        self.use_time = use_time
 
-        # Choose activation
-        if activation.lower() == 'relu':
-            act_fn = nn.ReLU
-        elif activation.lower() == 'silu':
-            act_fn = nn.SiLU
+        input_dim = state_dim + 1 if use_time else state_dim
+
+        if activation.lower() == 'resnet':
+            # ResNet architecture matching reference ControlNet
+            self.input_proj = nn.Linear(input_dim, hidden_dim)
+            self.blocks = nn.Sequential(
+                *[_ResBlock(hidden_dim) for _ in range(num_hidden_layers)]
+            )
+            output_layer = nn.Linear(hidden_dim, control_dim)
+            self.output_proj = output_layer
+            self.network = None  # use resnet path
         else:
-            raise ValueError(f"Unknown activation: {activation}")
+            # Plain MLP
+            if activation.lower() == 'relu':
+                act_fn = nn.ReLU
+            elif activation.lower() == 'silu':
+                act_fn = nn.SiLU
+            elif activation.lower() == 'tanh':
+                act_fn = nn.Tanh
+            else:
+                raise ValueError(f"Unknown activation: {activation}")
 
-        # Build network
-        layers = []
+            layers = [nn.Linear(input_dim, hidden_dim), act_fn()]
+            for _ in range(num_hidden_layers - 1):
+                layers.append(nn.Linear(hidden_dim, hidden_dim))
+                layers.append(act_fn())
+            output_layer = nn.Linear(hidden_dim, control_dim)
+            layers.append(output_layer)
+            self.network = nn.Sequential(*layers)
 
-        # Input layer
-        layers.append(nn.Linear(state_dim, hidden_dim))
-        layers.append(act_fn())
-
-        # Hidden layers
-        for _ in range(num_hidden_layers - 1):
-            layers.append(nn.Linear(hidden_dim, hidden_dim))
-            layers.append(act_fn())
-
-        # Output layer
-        output_layer = nn.Linear(hidden_dim, control_dim)
-        layers.append(output_layer)
-
-        self.network = nn.Sequential(*layers)
-
-        # Small output initialization (prevents large initial u_desired)
-        # Policy starts near-zero, so u_desired ≈ hover_bias (physically reasonable)
+        # Small output init — policy starts near-zero so u ≈ hover_bias
         nn.init.uniform_(output_layer.weight, -0.01, 0.01)
         nn.init.zeros_(output_layer.bias)
 
-    def forward(self, state):
+    def forward(self, state, t=None):
         """
         Forward pass.
 
         Args:
             state: State tensor (batch_size, state_dim)
+            t: Normalized time scalar in [0, 1] (ignored if use_time=False)
 
         Returns:
             control: Control tensor (batch_size, control_dim)
         """
-        return self.network(state)
+        if self.use_time:
+            t_val = t if t is not None else 0.0
+            t_tensor = torch.full(
+                (state.shape[0], 1), t_val,
+                dtype=state.dtype, device=state.device
+            )
+            inp = torch.cat([state, t_tensor], dim=-1)
+        else:
+            inp = state
+
+        if self.network is not None:
+            return self.network(inp)
+        # ResNet path
+        h = self.input_proj(inp)
+        h = self.blocks(h)
+        return self.output_proj(h)
 
     def save(self, filepath, metadata=None):
         """
@@ -92,7 +130,8 @@ class PolicyNetwork(nn.Module):
                 'state_dim': self.state_dim,
                 'control_dim': self.control_dim,
                 'hidden_dim': self.hidden_dim,
-                'num_hidden_layers': self.num_hidden_layers
+                'num_hidden_layers': self.num_hidden_layers,
+                'use_time': self.use_time,
             }
         }
 
@@ -127,7 +166,8 @@ class PolicyNetwork(nn.Module):
             state_dim=arch['state_dim'],
             control_dim=arch['control_dim'],
             hidden_dim=arch['hidden_dim'],
-            num_hidden_layers=arch.get('num_hidden_layers', 3)
+            num_hidden_layers=arch.get('num_hidden_layers', 3),
+            use_time=arch.get('use_time', False),
         ).to(device).to(dtype)
 
         model.load_state_dict(checkpoint['model_state_dict'])

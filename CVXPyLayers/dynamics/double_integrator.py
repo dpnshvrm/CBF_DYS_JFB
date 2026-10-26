@@ -53,12 +53,13 @@ class DoubleIntegrator(ControlAffineDynamics):
         )
         self.dim = dim  # dimension of position/velocity/control
 
-    def f(self, x):
+    def f(self, x, t=0.0):
         """
-        Drift dynamics: f(x) = [v, 0]
+        Drift dynamics: f(x, t) = [v, 0]  (time-invariant)
 
         Args:
             x: State [p, v] (batch_size, 2*dim)
+            t: Current time (unused; accepted for interface consistency)
 
         Returns:
             f: Drift vector (batch_size, 2*dim)
@@ -72,12 +73,13 @@ class DoubleIntegrator(ControlAffineDynamics):
 
         return torch.cat([f_p, f_v], dim=-1)
 
-    def g(self, x):
+    def g(self, x, t=0.0):
         """
-        Control matrix: g(x) = [0, I]^T
+        Control matrix: g(x, t) = [0, I]^T  (time-invariant)
 
         Args:
             x: State [p, v] (batch_size, 2*dim)
+            t: Current time (unused; accepted for interface consistency)
 
         Returns:
             g: Control matrix (batch_size, 2*dim, dim)
@@ -91,7 +93,7 @@ class DoubleIntegrator(ControlAffineDynamics):
         # Stack: g = [g_p; g_v] has shape (batch, 2*dim, dim)
         return torch.cat([g_p, g_v], dim=1)
 
-    def step(self, x, u, dt):
+    def step(self, x, u, dt, t=0.0):
         """
         Semi-implicit Euler integration:
             v_{t+1} = v_t + dt * a
@@ -101,6 +103,7 @@ class DoubleIntegrator(ControlAffineDynamics):
             x: Current state [p, v] (batch_size, 2*dim)
             u: Acceleration control (batch_size, dim)
             dt: Time step
+            t: Current time (unused; accepted for interface consistency)
 
         Returns:
             x_next: Next state [p_next, v_next] (batch_size, 2*dim)

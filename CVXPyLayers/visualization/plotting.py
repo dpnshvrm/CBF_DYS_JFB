@@ -4,6 +4,7 @@ Visualization utilities for CBF trajectories.
 Works for both single and double integrator systems.
 """
 
+import math
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -58,9 +59,11 @@ def plot_trajectories(
         ax.add_patch(circle_inner)
 
         # Outer circle (safety boundary)
+        # h = ||p-c||² - r² - ε ≥ 0  →  safe radius = sqrt(r² + ε)
+        safe_radius = math.sqrt(obstacle.radius ** 2 + obstacle.epsilon)
         circle_outer = Circle(
             obstacle.center.cpu().numpy(),
-            obstacle.radius + obstacle.epsilon,
+            safe_radius,
             color='red',
             alpha=0.2,
             linestyle='--',
@@ -123,7 +126,8 @@ def plot_trajectories(
     ax.set_xlabel('X Position', fontsize=14)
     ax.set_ylabel('Y Position', fontsize=14)
 
-    title = f'Safe Trajectories - {config.dynamics_type.replace("_", " ").title()}'
+    dynamics_label = config.dynamics_type.replace("_", " ").title() if config.dynamics_type else type(dynamics).__name__
+    title = f'Safe Trajectories - {dynamics_label}'
     if dynamics.relative_degree == 2:
         title += ' (HOCBF)'
     ax.set_title(title, fontsize=16, fontweight='bold')
@@ -143,7 +147,7 @@ def plot_trajectories(
     return fig, ax
 
 
-def simulate_trajectory(z0, policy, cbf_controller, dynamics, num_steps, dt):
+def simulate_trajectory(z0, policy, cbf_controller, dynamics, num_steps, dt, T=None):
     """
     Simulate a single trajectory.
 
@@ -163,15 +167,18 @@ def simulate_trajectory(z0, policy, cbf_controller, dynamics, num_steps, dt):
     controls = []
 
     z = z0
+    t = 0.0
+    t_horizon = T if T is not None else num_steps * dt
     for _ in range(num_steps):
         # Get desired control
-        u_desired = policy(z)
+        u_desired = policy(z, t / t_horizon)
 
         # Apply CBF filter
         u_safe = cbf_controller.filter_control(z, u_desired)
 
         # Step dynamics
         z = dynamics.step(z, u_safe, dt)
+        t += dt
 
         states.append(z)
         controls.append(u_safe)

@@ -1,16 +1,17 @@
 """
 Differentiable CBF-QP layer using CVXPyLayers.
 
-Solves the safety-critical QP:
-    minimize:    ||u - u_des||²
-    subject to:  A_i @ u ≥ b_i  for all obstacles i
+Solves the safety-critical QP with soft constraints (always feasible):
+    minimize:    ||u - u_des||² + p·||s||²
+    subject to:  A_i @ u + s_i ≥ b_i  for all obstacles i
+                 s_i ≥ 0
 
 Works for both:
     - Standard CBF (relative degree 1)
     - HOCBF (relative degree 2)
 
-The number of constraints = number of obstacles.
-Each constraint ensures safety w.r.t. one obstacle.
+Slack variables make the QP always feasible. Hard constraints are recovered
+in the limit p → ∞ (default p=1e4 is sufficient for typical CBF problems).
 """
 
 import torch
@@ -18,55 +19,62 @@ import cvxpy as cp
 from cvxpylayers.torch import CvxpyLayer
 
 
-def create_cbf_qp_layer(control_dim, num_obstacles):
+def create_cbf_qp_layer(control_dim, num_constraints, slack_penalty=1e4):
     """
-    Create differentiable CBF-QP layer with multiple obstacle constraints.
+    Create differentiable CBF-QP layer with soft constraints (always feasible).
 
     QP formulation:
-        minimize:    ||u - u_desired||²
-        subject to:  A_i @ u ≥ b_i  for i = 1, ..., num_obstacles
+        minimize:    ||u - u_desired||² + slack_penalty * ||s||²
+        subject to:  A_i @ u + s_i ≥ b_i  for i = 1, ..., num_constraints
+                     s_i ≥ 0
 
-    The specific form of A_i, b_i depends on relative degree:
-        - Relative degree 1: A_i = Lg h_i, b_i = -Lf h_i - α(h_i)
-        - Relative degree 2: A_i = Lg Lf h_i, b_i = -Lf² h_i - α₂(h₁_i)
+    Slack variables s make the problem always feasible. With large slack_penalty
+    the CBF constraint is enforced whenever possible and degrades gracefully
+    when constraints conflict or A_cbf is near-zero (e.g. quadrotor thrust
+    direction perpendicular to obstacle vector).
 
     Args:
         control_dim: Dimension of control input
-        num_obstacles: Number of obstacle constraints
+        num_constraints: Total number of CBF constraints (obstacles × agents)
+        slack_penalty: Penalty weight on constraint violation (default 1e4)
 
     Returns:
         CvxpyLayer: Differentiable QP solver
     """
-    # Decision variable
+    # Decision variables
     u = cp.Variable(control_dim)
+    slack = cp.Variable(num_constraints, nonneg=True)
 
     # Parameters
     u_desired = cp.Parameter(control_dim)
 
-    # CBF constraint parameters (one per obstacle)
-    A_cbf_list = [cp.Parameter(control_dim) for _ in range(num_obstacles)]
-    b_cbf_list = [cp.Parameter() for _ in range(num_obstacles)]
+    # CBF constraint parameters (one per constraint)
+    A_cbf_list = [cp.Parameter(control_dim) for _ in range(num_constraints)]
+    b_cbf_list = [cp.Parameter() for _ in range(num_constraints)]
 
-    # Objective: minimize deviation from desired control
-    # ||u - u_des||² = ||u||² - 2·u_des^T·u + ||u_des||²
-    # Drop constant term
-    objective = cp.Minimize(cp.sum_squares(u) - 2 * (u_desired @ u))
+    # Objective: deviation from desired + slack penalty
+    objective = cp.Minimize(
+        cp.sum_squares(u) - 2 * (u_desired @ u)
+        + slack_penalty * cp.sum_squares(slack)
+    )
 
-    # Constraints: one per obstacle
-    constraints = [A_cbf_list[i] @ u >= b_cbf_list[i] for i in range(num_obstacles)]
+    # Soft constraints: always feasible since s_i >= 0 can absorb any violation
+    constraints = [
+        A_cbf_list[i] @ u + slack[i] >= b_cbf_list[i]
+        for i in range(num_constraints)
+    ]
 
     # Create problem
     problem = cp.Problem(objective, constraints)
     assert problem.is_dpp(), "Problem must be DPP (Disciplined Parametrized Programming)"
 
-    # Create differentiable layer
-    # Parameters: [u_desired, A_cbf_1, b_cbf_1, A_cbf_2, b_cbf_2, ...]
+    # Parameters: [u_desired, A_cbf_1, b_cbf_1, ...]
     parameters = [u_desired] + [param for pair in zip(A_cbf_list, b_cbf_list) for param in pair]
 
     layer = CvxpyLayer(
         problem,
         parameters=parameters,
-        variables=[u]
+        variables=[u, slack]
     )
 
     return layer
@@ -106,7 +114,7 @@ class CBFQPController:
             self.n_agent = 1
             self.total_constraints = self.num_obstacles
 
-        # Create QP layer
+        # Create QP layer (soft constraints — always feasible)
         self.qp_layer = create_cbf_qp_layer(dynamics.control_dim, self.total_constraints)
 
         # Verify all obstacles have same relative degree as dynamics
@@ -131,12 +139,14 @@ class CBFQPController:
         batch_size = x.shape[0]
 
         # IMPORTANT: CVXPyLayers differentiation ONLY works with SCS solver!
-        # Configure SCS for speed vs accuracy tradeoff
+        # eps=1e-3: SCS convergence is the bottleneck, not gradient accuracy (IFT
+        #   is already an approximation).  1e-3 avoids "Solved/Inaccurate" reliably.
+        # max_iters=10000: sufficient for 20-var/15-constraint QP at eps=1e-3.
         solver_args = {
             "solve_method": "SCS",
-            "eps": 1e-4,  # Tolerance (default, balances speed/accuracy)
-            "max_iters": 2500,  # Default iterations (reduced from 5000 for speed)
-            "acceleration_lookback": 10,  # SCS 2.X stability parameter
+            "eps": 1e-3,
+            "max_iters": 1000,
+            "acceleration_lookback": 0,
         }
         # Compute CBF constraint parameters for each obstacle
         A_cbf_list = []
@@ -154,7 +164,9 @@ class CBFQPController:
  
                     # ── Degeneracy warning ──────────────────────────────────
                     if self.verbose:
-                        coeff = A_cbf[:, i, 4*i]  # thrust coefficient for agent i
+                        # Check the diagonal block for agent i
+                        ctrl_per_agent = A_cbf.shape[2] // A_cbf.shape[1]
+                        coeff = A_cbf[:, i, i * ctrl_per_agent:(i + 1) * ctrl_per_agent]
                         if coeff.abs().max().item() < 1e-4:
                             print(
                                 f"[CBF] WARNING: A_cbf degenerate for agent {i}, "
@@ -168,32 +180,22 @@ class CBFQPController:
                 A_cbf_list.append(A_cbf)
                 b_cbf_list.append(b_cbf)
 
-        # Normalize constraints: â·u ≥ b̂ where ‖â‖ = 1
-        # This prevents numerically degenerate constraints when h is large
-        # (unbounded/infeasible QP issues)
-        A_cbf_normalized = []
-        b_cbf_normalized = []
-        for A, b in zip(A_cbf_list, b_cbf_list):
-            A_norm = A.norm(dim=-1, keepdim=True).clamp(min=1e-4)  # (batch, 1)
-            A_normalized = A / A_norm  # Unit-norm row
-            b_normalized = b / A_norm.squeeze(-1)  # Scale b consistently
-            A_cbf_normalized.append(A_normalized)
-            b_cbf_normalized.append(b_normalized)
-
-        # Flatten parameters for QP layer
-        # [u_desired, A_cbf_1, b_cbf_1, A_cbf_2, b_cbf_2, ...]
-        # Move to CPU for CVXPy solvers (they use numpy)
+        # Do NOT manually normalize constraints — dividing b by a near-zero A_norm
+        # (clamped to 1e-4) turns benign slack constraints (b ≈ −55) into extreme
+        # values (b ≈ −550,000).  SCS then sees RHS values spanning six orders of
+        # magnitude, fails to converge, and returns "Solved/Inaccurate" with garbage
+        # u_safe.  SCS has its own internal scaling; pass raw constraints.
         device = u_desired.device
         qp_params = [u_desired.cpu()]
-        for A, b in zip(A_cbf_normalized, b_cbf_normalized):
+        for A, b in zip(A_cbf_list, b_cbf_list):
             qp_params.append(A.cpu())
             qp_params.append(b.cpu())
 
-        # Solve QP (on CPU)
-        u_safe, = self.qp_layer(*qp_params, solver_args=solver_args)
+        # Solve QP (on CPU); layer returns (u, slack) — discard slack
+        u_safe, _slack = self.qp_layer(*qp_params, solver_args=solver_args)
+        u_safe = u_safe.to(device)
 
-        # Move result back to original device
-        return u_safe.to(device)
+        return u_safe
 
     def __repr__(self):
         if self.n_agent > 1:

@@ -95,12 +95,13 @@ class Quadrotor(ControlAffineDynamics):
         return (x_reshaped[..., 0:3], x_reshaped[..., 3:6],
                 x_reshaped[..., 6:9], x_reshaped[..., 9:12])
 
-    def f(self, x):
+    def f(self, x, t=0.0):
         """
-        Drift dynamics f(x).
+        Drift dynamics f(x, t).  (time-invariant)
 
         Args:
             x: (batch, 12*n_agent)
+            t: Current time (unused; accepted for interface consistency)
 
         Returns:
             drift: (batch, 12*n_agent)
@@ -121,9 +122,9 @@ class Quadrotor(ControlAffineDynamics):
         drift = torch.cat([dpos, dangles, dvel, dang_vel], dim=-1)  # (batch, n_agent, 12)
         return drift.reshape(batch, self.state_dim)
 
-    def g(self, x):
+    def g(self, x, t=0.0):
         """
-        Control matrix g(x).
+        Control matrix g(x, t).  (time-invariant)
 
         For quadrotor:
         - Thrust affects linear acceleration via thrust direction
@@ -131,6 +132,7 @@ class Quadrotor(ControlAffineDynamics):
 
         Args:
             x: (batch, 12*n_agent)
+            t: Current time (unused; accepted for interface consistency)
 
         Returns:
             G: (batch, 12*n_agent, 4*n_agent)
@@ -159,28 +161,30 @@ class Quadrotor(ControlAffineDynamics):
 
         return G_full
 
-    def step(self, x, u, dt):
+    def step(self, x, u, dt, t=0.0):
         """
-        RK4 integration step.
+        RK4 integration step, passing time to each sub-step.
 
         Args:
             x: (batch, 12*n_agent)
             u: (batch, 4*n_agent)
             dt: time step
+            t: Current time. Passed to f and g at each RK4 sub-step,
+               matching the reference rk4_step(z, u, ti, h, f) interface.
 
         Returns:
             x_next: (batch, 12*n_agent)
         """
-        def dynamics(x_temp, u_temp):
-            f_x = self.f(x_temp)
-            g_x = self.g(x_temp)
+        def dynamics(x_temp, u_temp, t_temp):
+            f_x = self.f(x_temp, t_temp)
+            g_x = self.g(x_temp, t_temp)
             # g_x @ u: (batch, 12*n_agent, 4*n_agent) @ (batch, 4*n_agent, 1)
             return f_x + (g_x @ u_temp.unsqueeze(-1)).squeeze(-1)
 
-        k1 = dynamics(x, u)
-        k2 = dynamics(x + dt/2 * k1, u)
-        k3 = dynamics(x + dt/2 * k2, u)
-        k4 = dynamics(x + dt * k3, u)
+        k1 = dynamics(x,              u, t)
+        k2 = dynamics(x + dt/2 * k1, u, t + dt/2)
+        k3 = dynamics(x + dt/2 * k2, u, t + dt/2)
+        k4 = dynamics(x + dt   * k3, u, t + dt)
 
         return x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
 

@@ -114,6 +114,33 @@ Where `A_i, b_i` encode the CBF constraints.
 - `g(x)`: Control matrix (how control affects state)
 - `step(x, u, dt)`: Integrate forward one timestep
 
+#### Why split `f` and `g` separately?
+
+The reference implementation (`quadcopter_multi.py`) fuses everything into one function:
+```python
+def f(z, u, t):           # reference: computes ẋ = f(x) + g(x)u in one shot
+    dv = (u_thrust/m) * td - g * e3   # drift + control fused together
+    ...
+```
+
+We split them because **`CBFQPController` must build the constraint matrix `A_cbf`
+separately from the RHS `b_cbf`**.  Specifically, `A_cbf = Lg Lf h` — the Lie
+derivative of `Lf h` along the *control* directions — which requires evaluating
+`g(x)` (the thrust direction) independently of `f(x)`:
+
+```python
+# In SphericalObstacle.compute_cbf_constraint():
+thrust_dir = dynamics.thrust_direction(angles)      # ← from g(x)
+A_cbf[:, i, 4*i] = (2/m) * (dp * thrust_dir).sum()  # Lg Lf h
+
+Lf2_h = 2*||v||² - 2g*dp_z                          # ← from f(x) only
+b_cbf = -Lf2_h - alpha1*Lf_h - alpha2*psi1          # pure drift terms
+```
+
+The reference avoids this by deriving `K_cbf` and `d_cbf` manually inline in
+`construct_cbf_constraints()` rather than going through a generic `g(x)` matrix.
+Our control-affine split is more general and reusable across different systems.
+
 **Three Implementations:**
 
 | Class | System | State | Control | Relative Degree |
@@ -159,12 +186,17 @@ def compute_cbf_constraint(self, x, dynamics, alpha):
     """
 ```
 
-**Three Implementations:**
+**Four Implementations:**
 
-| Class | Dimension | Relative Degree | Used In |
-|-------|-----------|-----------------|---------|
-| `CircularObstacle` | 2D (x, y) | 1 or 2 | Single/Double Integrator |
-| `SphericalObstacle` | 3D (x, y, z) | 2 (HOCBF) | Quadrotor |
+| Class | Dimension | Relative Degree | Agents | Used In |
+|-------|-----------|-----------------|--------|---------|
+| `CircularObstacle1` | 2D (x, y) | 1 | 1 | Single Integrator |
+| `CircularObstacle2` | 2D (x, y) | 2 (HOCBF) | 1 | Double Integrator |
+| `MultiAgentCircularObstacle2` | 2D (x, y) | 2 (HOCBF) | N | Multi-agent Double Integrator |
+| `SphericalObstacle` | 3D (x, y, z) | 2 (HOCBF) | N | Quadrotor |
+
+`CircularObstacle` is a **factory** — it returns the right class automatically based on
+`dynamics.relative_degree` and `n_agent`.
 
 **Example - CircularObstacle for Single Integrator (RD=1):**
 ```python
@@ -182,6 +214,55 @@ def compute_cbf_constraint(self, x, dynamics, alpha):
 
     return A_cbf, b_cbf
 ```
+
+**Example - MultiAgentCircularObstacle2 for N double integrators (RD=2, HOCBF):**
+```python
+# n_agent=2, spatial_dim=2
+# State layout: [px1,py1,px2,py2, vx1,vy1,vx2,vy2]   (DoubleIntegrator(dim=4))
+# Control layout: [ax1,ay1, ax2,ay2]
+
+def compute_cbf_constraint(self, x, dynamics, alpha):
+    alpha1, alpha2 = alpha
+
+    # x: (batch, 8)  →  pos: (batch, 2, 2),  vel: (batch, 2, 2)
+    pos = x[:, :N*sdim].reshape(batch, N, sdim)
+    vel = x[:, N*sdim:].reshape(batch, N, sdim)
+
+    dp   = pos - center                            # (batch, N, 2)
+    h0   = (dp**2).sum(-1) - r² - ε               # (batch, N)
+    Lf_h = 2*(dp*vel).sum(-1)                     # (batch, N)
+    psi1 = Lf_h + alpha1*h0                       # (batch, N)
+    Lf2_h = 2*(vel**2).sum(-1)                    # (batch, N)  no drift
+
+    # Block-diagonal A: agent i's constraint only involves agent i's control
+    A_cbf = zeros(batch, N, N*sdim)
+    for i in range(N):
+        A_cbf[:, i, i*sdim:(i+1)*sdim] = 2*dp[:, i, :]   # (batch, 2)
+
+    b_cbf = -(Lf2_h + alpha1*Lf_h + alpha2*psi1)  # (batch, N)
+    return A_cbf, b_cbf
+```
+
+`A_cbf` for 2 agents looks like:
+```
+agent 0: [2(p0-c)_x, 2(p0-c)_y,  0,           0          ]
+agent 1: [0,          0,           2(p1-c)_x,  2(p1-c)_y  ]
+```
+Each agent only controls its own acceleration, so the matrix is block-diagonal.
+`CBFQPController` detects the `(batch, N, control_dim)` shape and unpacks into
+`N` separate QP constraints automatically.
+
+**Usage:**
+```python
+dynamics = DoubleIntegrator(dim=n_agent * 2)   # e.g. dim=4 for 2 agents in 2D
+obstacles = [
+    CircularObstacle(center=[1.0, 1.5], radius=0.4, epsilon=0.1,
+                     dynamics=dynamics, n_agent=n_agent),
+]
+# Factory returns MultiAgentCircularObstacle2 automatically
+```
+
+---
 
 **Example - SphericalObstacle for Quadrotor (RD=2, HOCBF):**
 ```python
@@ -520,34 +601,35 @@ TrainingConfig(
 
 **Config:**
 ```python
-# Hardcoded (not using TrainingConfig)
-n_agent = 10
-dynamics = Quadrotor(n_agent=10, mass=0.5, gravity=1.0)
-obstacles = [
-    SphericalObstacle(
-        center=[0.63, 1.0, 1.0],
-        radius=0.35,
-        epsilon=0.15,
-        dynamics=dynamics,
-        n_agent=10
-    ),
-    # ... 2 more obstacles
-]
-cbf_alpha = (5.0, 5.0)  # HOCBF
+dynamics = Quadrotor(n_agent=5, mass=0.5, gravity=1.0)
+obstacles = [SphericalObstacle(...), ...]   # 3 spherical obstacles
+
+config = TrainingConfig(
+    dynamics=dynamics,           # pass object, not type string
+    obstacles_list=obstacles,
+    output_transform=make_output_transform(...),   # tanh + hover bias
+    cost_fn=make_cost_fn(...),                     # multi-component cost
+    sample_fn=make_sample_fn(...),                 # per-agent xy noise
+    plot_fn=make_plot_fn(...),
+    cbf_alpha=(5.0, 5.0),        # HOCBF (α₁, α₂)
+    ...
+)
+trainer = CBFTrainer(config)
+trainer.train()
 ```
 
 **Key Math:**
 - State per agent: `[x, y, z, ψ, θ, φ, vx, vy, vz, vψ, vθ, vφ]` (12D)
 - Control per agent: `[thrust, τψ, τθ, τφ]` (4D)
-- Total: 10 agents → 120D state, 40D control
-- Barrier per agent per obstacle: `h(x) = ||p_i - c||² - r²`
-- HOCBF constraint per agent per obstacle (30 total constraints!)
+- Total: 5 agents → 60D state, 20D control
+- Barrier per agent per obstacle: `h = ‖p_i − c‖² − r² − ε²`
+- HOCBF gives 15 total constraints (3 obstacles × 5 agents)
 
 **Special Considerations:**
-- Multi-agent: Each agent has own constraint against each obstacle
-- 3D obstacles (spheres)
-- Non-linear dynamics (thrust direction depends on angles)
-- Only thrust affects position (angular controls don't appear in CBF)
+- Multi-agent: each agent has its own constraint per obstacle
+- 3D spherical obstacles
+- Non-linear dynamics (thrust direction depends on Euler angles)
+- Only thrust affects position; torques don't appear in CBF (`Lg h = 0` for torques)
 
 ---
 
@@ -618,6 +700,239 @@ for epoch in range(num_epochs):
 ---
 
 ## Mathematical Background
+
+### Higher-Order Control Barrier Functions (HOCBF)
+
+#### Why Standard CBF Is Not Enough
+
+For a system `ẋ = f(x) + g(x)u`, the standard CBF condition is:
+
+```
+ḣ + α(h) ≥ 0   ⟺   Lf h + Lg h · u ≥ -α(h)
+```
+
+This requires that control `u` appears in `ḣ` — i.e., `Lg h ≠ 0`. This holds when
+the barrier depends on the state components that control directly drives.
+
+**Problem:** For position barriers like `h(p) = ‖p - c‖² - r²`:
+- Single integrator `ẋ = u`: control is velocity, so `Lg h = 2(p-c) ≠ 0` — OK!
+- Double integrator `ẍ = a`: control is acceleration, velocity is intermediate.
+  `ḣ = 2(p-c)·v` and `Lg h = 0` because `u` does not appear in `ḣ` at all.
+  Standard CBF fails: you can't constrain `u` from this equation.
+
+The **relative degree** of `h` w.r.t. the system is the number of times you must
+differentiate `h` before control `u` appears. Position barriers with double integrators
+and quadrotors have relative degree **2**.
+
+---
+
+#### Step-by-Step HOCBF Derivation (Relative Degree 2)
+
+**Setup:** Control-affine system `ẋ = f(x) + g(x)u`, barrier `h₀(x)` with `Lg h₀ = 0`.
+
+---
+
+**Step 1 — Original barrier and safe set**
+
+```
+h₀(x) ≥ 0   defines the safe set S₀
+```
+
+**Step 2 — First time derivative (control not present)**
+
+```
+ḣ₀ = ∇h₀ · ẋ = ∇h₀ · f(x) + ∇h₀ · g(x) · u
+             = Lf h₀ + 0          (since Lg h₀ = 0)
+             = Lf h₀
+```
+
+Since `u` doesn't appear, we cannot impose the CBF condition yet.
+
+**Step 3 — Introduce auxiliary barrier ψ₁**
+
+We want h₀ to stay non-negative. A sufficient condition is that the set
+
+```
+S₁ = { x : ψ₁(x) ≥ 0 }    where    ψ₁ = Lf h₀ + α₁ · h₀
+```
+
+is forward invariant. This is the HOCBF "cascade": if `ψ₁ ≥ 0` and `h₀ ≥ 0`
+initially, then `h₀` stays non-negative.
+
+**Intuition:** `ψ₁ ≥ 0` means "even if `h₀` is small, it is decreasing slowly enough
+(proportional to how small it is) that the safe set boundary won't be crossed."
+
+**Step 4 — Second time derivative (control appears here)**
+
+Differentiate `ψ₁`:
+
+```
+ψ̇₁ = d/dt [Lf h₀ + α₁ h₀]
+     = d/dt [Lf h₀] + α₁ ḣ₀
+     = Lf(Lf h₀) + Lg(Lf h₀) · u + α₁ Lf h₀
+     = Lf² h₀   +  Lg Lf h₀ · u  +  α₁ Lf h₀
+```
+
+Now `u` appears! `Lg Lf h₀ ≠ 0` is the condition for relative degree exactly 2.
+
+**Step 5 — Apply CBF condition to ψ₁**
+
+Require `ψ̇₁ + α₂ ψ₁ ≥ 0` (standard CBF on the auxiliary barrier):
+
+```
+Lf² h₀  +  Lg Lf h₀ · u  +  α₁ Lf h₀  +  α₂ ψ₁  ≥  0
+```
+
+**Step 6 — Rearrange into QP form**
+
+Move everything without `u` to the right:
+
+```
+( Lg Lf h₀ ) · u  ≥  -(Lf² h₀  +  α₁ Lf h₀  +  α₂ ψ₁)
+```
+
+This is `A_cbf · u ≥ b_cbf` with:
+
+```
+A_cbf  =  Lg Lf h₀
+b_cbf  =  -(Lf² h₀  +  α₁ Lf h₀  +  α₂ ψ₁)
+       =  -(Lf² h₀  +  (α₁+α₂) Lf h₀  +  α₁α₂ h₀)
+```
+
+The second form (expanding `ψ₁ = Lf h₀ + α₁ h₀`) makes the polynomial structure
+visible: the characteristic polynomial `(s + α₁)(s + α₂)` has roots `-α₁, -α₂`,
+giving exponential convergence toward the safe set boundary.
+
+---
+
+#### Concrete Example: Double Integrator + Circular Obstacle
+
+**System:** `ẋ = [v, a]` with `f(x) = [v, 0]`, `g(x) = [0, I]`
+
+**Barrier:** `h₀(p) = ‖p - c‖² - r² - ε`
+
+| Quantity | Formula | Code (`circular_obstacle.py`) |
+|----------|---------|-------------------------------|
+| `h₀` | `‖p - c‖² - r² - ε` | `dist_sq - radius² - epsilon` |
+| `∇h₀` | `2(p - c)` | `grad_h0 = 2*(p - center)` |
+| `Lf h₀` | `2(p-c) · v` | `h0_dot = sum(grad_h0 * v)` |
+| `ψ₁` | `Lf h₀ + α₁ h₀` | `h1 = h0_dot + alpha1 * h0` |
+| `Lf² h₀` | `2‖v‖²` | `Lf2_h0 = 2*sum(v**2)` |
+| `Lg Lf h₀` | `2(p - c)` | `Lg_Lf_h0 = grad_h0` |
+| `A_cbf` | `2(p - c)` | `A_cbf = Lg_Lf_h0` |
+| `b_cbf` | `-(2‖v‖² + α₁ Lf h₀ + α₂ ψ₁)` | `b_cbf = -Lf2_h0 - alpha1*h0_dot - alpha2*h1` |
+
+**Why `Lf² h₀ = 2‖v‖²`?**
+
+```
+Lf² h₀ = d/dt [2(p-c)·v]  along f(x) = [v, 0]
+        = 2ṗ · v + 2(p-c) · v̇_drift
+        = 2v · v  +  2(p-c) · 0          (double integrator has no drift acceleration)
+        = 2‖v‖²
+```
+
+**Why `Lg Lf h₀ = 2(p-c)`?**
+
+```
+Lf h₀ = 2(p-c) · v        (depends on v)
+∂(Lf h₀)/∂v = 2(p-c)      (gradient w.r.t. velocity component)
+g(x) = [0; I]              (control enters as acceleration → affects velocity)
+Lg Lf h₀ = ∂(Lf h₀)/∂v · I = 2(p-c)
+```
+
+**Geometric meaning:** `2(p-c)` is the outward normal to the obstacle boundary.
+The constraint says: "your acceleration must have a sufficient outward component
+(relative to velocity and how close you are)."
+
+---
+
+#### Concrete Example: Quadrotor + Spherical Obstacle
+
+**System:** 6-DOF quadrotor, state per agent `[p, η, v, ω]` (12D), Euler angles `η = [ψ,θ,φ]`
+
+**Control:** `u = [T, τ_ψ, τ_θ, τ_φ]` — thrust + three torques
+
+**Drift acceleration** (what `f(x)` contributes to `v̇`): gravity `−g e₃`
+
+**Barrier:** `h₀(p) = ‖p - c‖² - r² - ε²`
+
+| Quantity | Formula | Code (`spherical_obstacle.py`) |
+|----------|---------|-------------------------------|
+| `h₀` | `‖p-c‖² - r² - ε²` | `(dp**2).sum() - r² - ε²` |
+| `Lf h₀` | `2(p-c) · v` | `2*(dp*velocities).sum(-1)` |
+| `ψ₁` | `Lf h₀ + α₁ h₀` | `psi1 = Lf_h + alpha1*h_vals` |
+| `Lf² h₀` | `2‖v‖² - 2g (p_z - c_z)` | `2*vel_sq - 2*gravity*dp[:,:,2]` |
+| `Lg Lf h₀` (thrust) | `(2/m)(p-c) · thrust_dir` | `(2/m)*(dp[:,i]*thrust_dir[:,i]).sum(-1)` |
+| `Lg Lf h₀` (torques) | `0` | not set (zeros by default) |
+| `A_cbf` | sparse, entry at `4*i` only | `A_cbf[:, i, 4*i] = ...` |
+| `b_cbf` | `-(Lf²h + α₁ Lf h + α₂ ψ₁)` | `-Lf2_h - alpha1*Lf_h - alpha2*psi1` |
+
+**Why `Lf² h₀ = 2‖v‖² - 2g(p_z - c_z)`?**
+
+```
+Lf² h₀ = d/dt [2(p-c)·v]  along drift f(x):
+        = 2ṗ · v + 2(p-c) · v̇_drift
+        = 2v · v  +  2(p-c) · (-g e₃)     (gravity is the drift acceleration)
+        = 2‖v‖²  -  2g (p_z - c_z)
+```
+
+**Why only thrust enters `Lg Lf h₀`?**
+
+```
+Lf h₀ = 2(p-c) · v        (depends on v)
+Control u = [T, τ_ψ, τ_θ, τ_φ]:
+  - Thrust T → v̇ += (T/m) * d(η)    (d = body z-axis, rotation-dependent)
+  - Torques τ → ω̇ only              (angular acceleration, not v)
+
+Lg Lf h₀ · u = 2(p-c) · ∂v̇/∂u · u = 2(p-c) · (T/m) d(η)
+→ scalar coeff of T: (2/m)(p-c) · d(η)
+→ coeff of torques:  0
+```
+
+The thrust direction `d(η)` is computed by `dynamics.thrust_direction(angles)`,
+which returns the body z-axis rotated into the world frame via Euler angles.
+
+**Sparsity in multi-agent setting:**
+
+For `n` agents and one obstacle, `A_cbf` is shape `(batch, n_agent, 4*n_agent)`.
+Agent `i`'s constraint row has only one non-zero entry — at column `4*i` (its thrust):
+
+```
+A_cbf[:, i, :] = [0, 0, ..., (2/m)(p_i-c)·d_i, 0, ..., 0]
+                               ^^^^^^^^^^^^^^^^^
+                               index 4*i (agent i's thrust)
+```
+
+Torques don't appear because angular dynamics don't affect linear position
+through `Lf h₀`. This sparsity is why the QP stays tractable at 30 constraints
+(3 obstacles × 10 agents).
+
+---
+
+#### Safety Guarantee Summary
+
+Two conditions together guarantee `h₀(x) ≥ 0` for all time:
+
+1. **Initialization:** `h₀(x₀) ≥ 0` and `ψ₁(x₀) ≥ 0`
+2. **HOCBF constraint satisfied at every timestep:** `A_cbf · u ≥ b_cbf`
+
+If these hold, then by the cascade argument:
+- `ψ₁ ≥ 0` is forward invariant (from the QP constraint via Nagumo's theorem)
+- `ψ₁ ≥ 0` + `h₀(x₀) ≥ 0` ⟹ `h₀(x(t)) ≥ 0` for all `t ≥ 0`
+
+The QP in `CBFQPController` enforces condition 2 at every timestep,
+so safety is guaranteed as long as the system starts in `S₀ ∩ S₁`.
+
+---
+
+#### Class-K Functions and Why Linear α Is Fine
+
+The theory requires `α₁, α₂` to be class-K functions (continuous, zero at 0, strictly
+increasing). We use linear `α₁(h) = α₁ · h` and `α₂(ψ₁) = α₂ · ψ₁`, which satisfies
+this. Larger `α₁, α₂` → less conservative (allows faster approaches to boundary)
+but may require larger control effort. In practice `α₁ = α₂ = 5.0` works well.
+
+---
 
 ### Implicit Differentiation of QP
 
@@ -749,22 +1064,27 @@ A_ij for (agent_i, obstacle_j):
 | `CBFQPController` | ✓ | ✓ | ✓ |
 | `create_cbf_qp_layer()` | ✓ | ✓ | ✓ |
 | `PolicyNetwork` | ✓ | ✓ | ✓ |
-| `CBFTrainer` | ✓ | ✓ | ✗ (custom) |
-| `TrainingConfig` | ✓ | ✓ | ✗ (custom) |
+| `CBFTrainer` | ✓ | ✓ | ✓ (hooks) |
+| `TrainingConfig` | ✓ | ✓ | ✓ (hooks) |
+
+All three examples now use `CBFTrainer` / `TrainingConfig` with the same pattern:
+build dynamics + obstacles → pass hooks for system-specific logic → `trainer.train()`.
+The quadrotor uses `output_transform`, `cost_fn`, `sample_fn`, and `plot_fn` hooks.
 
 ### Key Differences
 
-| Feature | Single Int | Double Int | Quadrotor |
-|---------|------------|------------|-----------|
-| **State Dim** | 2 | 4 | 120 (12×10) |
-| **Control Dim** | 2 | 2 | 40 (4×10) |
-| **Relative Degree** | 1 | 2 | 2 |
-| **CBF Type** | Standard | HOCBF | HOCBF |
-| **Obstacle Type** | 2D Circle | 2D Circle | 3D Sphere |
-| **Num Obstacles** | 2 | 3 | 3 |
-| **Num Constraints** | 2 | 3 | 30 (3×10) |
-| **Multi-Agent** | No | No | Yes |
-| **Dynamics** | Linear | Linear | Non-linear |
+| Feature | Single Int | Double Int | Multi-Agent Double Int | Quadrotor |
+|---------|------------|------------|------------------------|-----------|
+| **State Dim** | 2 | 4 | 4×N | 120 (12×10) |
+| **Control Dim** | 2 | 2 | 2×N | 40 (4×10) |
+| **Relative Degree** | 1 | 2 | 2 | 2 |
+| **CBF Type** | Standard | HOCBF | HOCBF | HOCBF |
+| **Obstacle Class** | `CircularObstacle1` | `CircularObstacle2` | `MultiAgentCircularObstacle2` | `SphericalObstacle` |
+| **Obstacle Dim** | 2D | 2D | 2D | 3D |
+| **Num Constraints** | n_obs | n_obs | n_obs × N | n_obs × N |
+| **Multi-Agent** | No | No | Yes | Yes |
+| **Dynamics** | Linear | Linear | Linear | Non-linear |
+| **Dynamics Class** | `SingleIntegrator(dim=2)` | `DoubleIntegrator(dim=2)` | `DoubleIntegrator(dim=N*2)` | `Quadrotor(n_agent=N)` |
 
 ### The Pipeline
 

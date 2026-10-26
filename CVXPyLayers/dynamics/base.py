@@ -42,12 +42,14 @@ class ControlAffineDynamics(ABC):
         self.relative_degree = relative_degree
 
     @abstractmethod
-    def f(self, x):
+    def f(self, x, t=0.0):
         """
-        Drift dynamics f(x).
+        Drift dynamics f(x, t).
 
         Args:
             x: State tensor (batch_size, state_dim)
+            t: Current time (default 0.0). These dynamics are time-invariant;
+               t is accepted to match the reference interface f(z, u, t).
 
         Returns:
             f: Drift vector (batch_size, state_dim)
@@ -55,12 +57,13 @@ class ControlAffineDynamics(ABC):
         pass
 
     @abstractmethod
-    def g(self, x):
+    def g(self, x, t=0.0):
         """
-        Control matrix g(x).
+        Control matrix g(x, t).
 
         Args:
             x: State tensor (batch_size, state_dim)
+            t: Current time (default 0.0). Accepted to match reference interface.
 
         Returns:
             g: Control matrix (batch_size, state_dim, control_dim)
@@ -68,14 +71,16 @@ class ControlAffineDynamics(ABC):
         pass
 
     @abstractmethod
-    def step(self, x, u, dt):
+    def step(self, x, u, dt, t=0.0):
         """
-        Simulate one time step: x_{t+1} = integrate(f(x) + g(x)u, dt)
+        Simulate one time step: x_{t+1} = integrate(f(x,t) + g(x,t)u, dt)
 
         Args:
             x: Current state (batch_size, state_dim)
             u: Control input (batch_size, control_dim)
             dt: Time step
+            t: Current time (default 0.0). Passed through to f and g at each
+               RK4 sub-step, matching reference: rk4_step(z, u, ti, h, f).
 
         Returns:
             x_next: Next state (batch_size, state_dim)

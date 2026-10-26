@@ -24,29 +24,31 @@ class CircularObstacle:
     """
     Factory for circular obstacle barriers.
 
-    Automatically creates the correct barrier type based on dynamics.
+    Automatically creates the correct barrier type based on dynamics and n_agent.
     """
 
-    def __new__(cls, center, radius, epsilon=0.1, dynamics=None):
+    def __new__(cls, center, radius, epsilon=0.1, dynamics=None, n_agent=1):
         """
         Create circular obstacle barrier matching dynamics relative degree.
 
         Args:
-            center: Obstacle center (tensor or list)
+            center: Obstacle center (tensor or list) — always 2D spatial coords
             radius: Obstacle radius (including safety margin)
             epsilon: Small constant for numerical stability
             dynamics: Dynamics object (determines relative degree)
+            n_agent: Number of agents (>1 returns multi-agent variant)
 
         Returns:
-            CircularObstacle1 or CircularObstacle2 instance
+            CircularObstacle1, CircularObstacle2, or MultiAgentCircularObstacle2 instance
         """
         if dynamics is None:
-            # Default to relative degree 1
             return CircularObstacle1(center, radius, epsilon)
 
         if dynamics.relative_degree == 1:
             return CircularObstacle1(center, radius, epsilon)
         elif dynamics.relative_degree == 2:
+            if n_agent > 1:
+                return MultiAgentCircularObstacle2(center, radius, epsilon, n_agent=n_agent)
             return CircularObstacle2(center, radius, epsilon)
         else:
             raise ValueError(f"Unsupported relative degree: {dynamics.relative_degree}")
@@ -228,3 +230,96 @@ class CircularObstacle2(RelativeDegree2Barrier):
     def __repr__(self):
         return (f"CircularObstacle2(center={self.center.tolist()}, "
                 f"radius={self.radius}, epsilon={self.epsilon})")
+
+
+class MultiAgentCircularObstacle2(RelativeDegree2Barrier):
+    """
+    Circular obstacle for N agents each running double integrator dynamics.
+
+    State layout (from DoubleIntegrator(dim=N*2)):
+        x = [p1, p2, ..., pN,  v1, v2, ..., vN]
+            each pi, vi ∈ R^spatial_dim (default 2)
+
+    Control layout:
+        u = [a1, a2, ..., aN]
+            each ai ∈ R^spatial_dim
+
+    For each agent i:
+        h_i  = ||p_i - c||² - r² - ε
+        Lf h_i  = 2(p_i - c) · v_i
+        Lf²h_i  = 2||v_i||²                   (no drift acceleration)
+        LgLf h_i = 2(p_i - c)  w.r.t. a_i only
+
+    A_cbf[i] is zero everywhere except at the agent i control slots:
+        A_cbf[i, i*sdim:(i+1)*sdim] = 2(p_i - c)
+    """
+
+    def __init__(self, center, radius, epsilon=0.1, n_agent=2, spatial_dim=2):
+        super().__init__()
+        self.center = torch.as_tensor(center) if not isinstance(center, torch.Tensor) else center
+        self.radius = radius
+        self.epsilon = epsilon
+        self.n_agent = n_agent
+        self.spatial_dim = spatial_dim  # spatial dims per agent (2 for 2D)
+
+    def _extract(self, x):
+        """Split flat state into per-agent positions and velocities."""
+        sdim = self.spatial_dim
+        N = self.n_agent
+        # x: (batch, 2*N*sdim)
+        # positions: columns 0 : N*sdim, shape (batch, N, sdim)
+        pos = x[:, :N * sdim].reshape(x.shape[0], N, sdim)
+        # velocities: columns N*sdim : end, shape (batch, N, sdim)
+        vel = x[:, N * sdim:].reshape(x.shape[0], N, sdim)
+        return pos, vel
+
+    def h(self, x, dynamics=None):
+        """Barrier values per agent: (batch, n_agent)."""
+        pos, _ = self._extract(x)
+        center = self.center.to(x.device).to(x.dtype).view(1, 1, self.spatial_dim)
+        dp = pos - center
+        return (dp ** 2).sum(dim=-1) - self.radius ** 2 - self.epsilon
+
+    def compute_hocbf_terms(self, x, dynamics):
+        """Not used directly; compute_cbf_constraint overrides the base."""
+        raise NotImplementedError
+
+    def compute_cbf_constraint(self, x, dynamics, alpha):
+        """
+        Returns:
+            A_cbf: (batch, n_agent, n_agent*spatial_dim)  — block-diagonal
+            b_cbf: (batch, n_agent)
+        """
+        batch = x.shape[0]
+        N = self.n_agent
+        sdim = self.spatial_dim
+        control_dim = N * sdim
+
+        if isinstance(alpha, (int, float)):
+            alpha1 = alpha2 = float(alpha)
+        else:
+            alpha1, alpha2 = alpha
+
+        pos, vel = self._extract(x)   # (batch, N, sdim) each
+        center = self.center.to(x.device).to(x.dtype).view(1, 1, sdim)
+
+        dp = pos - center                                   # (batch, N, sdim)
+        h0 = (dp ** 2).sum(dim=-1) - self.radius ** 2 - self.epsilon  # (batch, N)
+
+        Lf_h = 2.0 * (dp * vel).sum(dim=-1)               # (batch, N)
+        psi1 = Lf_h + alpha1 * h0                          # (batch, N)
+        Lf2_h = 2.0 * (vel ** 2).sum(dim=-1)              # (batch, N)  no drift term
+
+        # A_cbf: block-diagonal — agent i's constraint uses only agent i's control
+        A_cbf = torch.zeros(batch, N, control_dim, dtype=x.dtype, device=x.device)
+        for i in range(N):
+            A_cbf[:, i, i * sdim:(i + 1) * sdim] = 2.0 * dp[:, i, :]  # (batch, sdim)
+
+        b_cbf = -(Lf2_h + alpha1 * Lf_h + alpha2 * psi1)  # (batch, N)
+
+        return A_cbf, b_cbf
+
+    def __repr__(self):
+        return (f"MultiAgentCircularObstacle2(center={self.center.tolist()}, "
+                f"radius={self.radius}, epsilon={self.epsilon}, "
+                f"n_agent={self.n_agent}, spatial_dim={self.spatial_dim})")
