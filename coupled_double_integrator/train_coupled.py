@@ -73,6 +73,14 @@ def u_fn(z, t):
 print(f"device={device}  N={prob.n}  pairs c={prob.n_pair}  state dim={prob.state_dim}  control dim={prob.control_dim}"
       f"  net params={sum(p.numel() for p in net.parameters())}  steps={nt}", flush=True)
 
+# Plot initial rollout (epoch 0, untrained network)
+if args.plot_every > 0:
+    with torch.no_grad():
+        z0_init = prob.sample_initial_condition(args.batch_size)
+        _, _, _, info_init = prob.compute_loss(u_fn, z0_init, nt, args.dt, proj, args.alpha_running, args.alpha_terminal_start,
+                                               max_iter=args.dys_max_iter, tol=args.dys_tol, return_traj=True)
+        plot_rollout(prob, info_init["traj"], os.path.join(out_dir, "rollout_epoch0.png"), dt=args.dt)
+
 alpha_terminal = args.alpha_terminal_start
 best_loss = float("inf")
 log_path = os.path.join(out_dir, "log.csv")
