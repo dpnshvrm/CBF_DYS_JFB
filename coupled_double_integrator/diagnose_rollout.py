@@ -40,7 +40,7 @@ cfg = json.load(open(os.path.join(a.run_dir, "args.json")))
 dtype = torch.float64 if a.double else torch.float32
 
 prob = CoupledDoubleIntegrators(n_agent=cfg["n_agent"], d=cfg["d"], gamma=cfg["gamma"],
-                                z0_std=cfg["z0_std"], vel_weight=cfg["vel_weight"])
+                                z0_std=cfg["z0_std"], vel_weight=cfg["vel_weight"], margin=cfg.get("margin", 0.0))
 net = ControlNet(input_dim=prob.state_dim + 1, hidden_dim=cfg["hidden_dim"], output_dim=prob.control_dim,
                  n_blocks=cfg["n_blocks"]).to(device)
 net.load_state_dict(torch.load(os.path.join(a.run_dir, a.weights), map_location=device))

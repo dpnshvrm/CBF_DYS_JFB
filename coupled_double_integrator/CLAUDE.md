@@ -34,3 +34,17 @@ Hypotheses, most likely first: (1) the 0.2 s zero-order-hold step is too coarse 
 
 ## Style
 Explain math plainly (equation, then what the code does, then how they line up). Flag decision points and ask before changing the design. Keep terminology stable; no internal jargon.
+
+## Update 2026-10-27 (after reading both 3000-epoch runs, dt 0.2 and dt 0.1)
+Finding: both runs are safe for epochs ~50-500 (min_h ~ +0.01, constraints active) and collapse during the omega ramp
+(first min_h < -0.05 at omega ~ 345-365, epochs ~650-700); halving dt delays but does not prevent it. DYS hits max_iter
+in most of the collapsed epochs. min_h = -0.49 = -d^2 means two agents sit on the same point, where the pair row of K is
+zero and the QP is infeasible. best_control_net.pth was only saved once omega = 500, i.e. from the unsafe phase.
+New (not yet run by Claude chat; run the tests first):
+* `train_coupled.py --margin eps` (CBF enforces d+eps; "true" safety always uses d), `--alpha_terminal_final W` (omega cap, already existed),
+  `best_safe_control_net.pth` = lowest running+W_final*terminal among epochs with min_h_true >= 0, evaluated in `eval_best_safe.json`.
+  Log has two new columns at the end: min_h_true, proj_fail.
+* `--projector {dys,cvxpy_hard,cvxpy_slack}`: CVXPY-Layers baselines in `cvxpy_projector.py` (SCS eps 1e-3, max_iters 1000,
+  quadratic slack penalty 1e4 as in both repos; the paper's eq. (reg_qp) says linear -- unresolved which produced the table).
+* `test_cvxpy_projector.py` compares CVXPY vs tightly-solved DYS on the same states.
+Rules unchanged: no tanh bound (only the quadcopters use it in the repo), dt stays 0.2 for main results.
