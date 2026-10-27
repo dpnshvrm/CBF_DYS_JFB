@@ -77,7 +77,7 @@ class AutogradCBF:
 # ----------------------------------------------------------------------------------------------
 class CoupledDoubleIntegrators:
     def __init__(self, n_agent=3, d=0.7, gamma=1.0, center=(1.5, 1.5), radius=math.sqrt(8.0),
-                 z0_std=5e-2, cbf=None, vel_weight=1.0):
+                 z0_std=5e-2, cbf=None, vel_weight=1.0, margin=0.0):
         """
         n_agent    number of agents N
         d          safety distance (used by the default BallCBF)
@@ -86,6 +86,9 @@ class CoupledDoubleIntegrators:
         radius     radius of the initial circle (repo: sqrt(8))
         z0_std     std of the Gaussian jitter on the initial positions (repo: 5e-2)
         vel_weight weight w in the running cost 0.5|u|^2 + w|v|^2   (repo code: w = 1)
+        margin     safety margin eps >= 0: the CBF enforces distance >= d + eps (the repo's obstacle examples use
+                   eps_safe = 0.1-0.15); the quantities reported as 'true' safety (min_h_true, min_pair_distance)
+                   always refer to the margin-free distance d.  Default 0 = no margin.
         """
         self.n = int(n_agent)
         self.d = float(d)
@@ -94,7 +97,8 @@ class CoupledDoubleIntegrators:
         self.radius = float(radius)
         self.z0_std = float(z0_std)
         self.vel_weight = float(vel_weight)
-        self.cbf = cbf if cbf is not None else BallCBF(d)
+        self.margin = float(margin)
+        self.cbf = cbf if cbf is not None else BallCBF(d + self.margin)
 
         I, J = torch.triu_indices(self.n, self.n, offset=1)
         self.pair_i, self.pair_j = I.to(device), J.to(device)
@@ -124,6 +128,14 @@ class CoupledDoubleIntegrators:
     def barrier(self, z):
         dp, _ = self.pair_differences(z)
         return self.cbf.h(dp)                                              # (B,c)
+
+    def true_barrier(self, z):
+        """Margin-free safety value |dp|^2 - d^2 (>= 0 iff every pair is at least d apart). Ball barrier only;
+        for a custom barrier it falls back to the barrier itself."""
+        if isinstance(self.cbf, BallCBF):
+            dp, _ = self.pair_differences(z)
+            return (dp ** 2).sum(-1) - self.d ** 2
+        return self.barrier(z)
 
     def psi1(self, z):
         """h_1 = h' + gamma*h."""
@@ -189,7 +201,9 @@ class CoupledDoubleIntegrators:
         if isinstance(self.cbf, BallCBF):
             dist = (pos[:, self.pair_i] - pos[:, self.pair_j]).norm(dim=-1)                # (B,c)
             floor = (self.n - 1) * self.d ** 2 / 4.0                                       # bound of PLAN.md Sec. 6
+            floor_m = (self.n - 1) * (self.d + self.margin) ** 2 / 4.0                     # floor when the margin is enforced
             out.update(pos_cost_floor=floor, pos_cost_minus_floor=float(e_pos.mean()) - floor,
+                       pos_cost_floor_with_margin=floor_m,
                        side_error_max=float((dist - self.d).abs().max(dim=1).values.mean()),
                        min_pair_distance=float(dist.min()))
         return out
@@ -216,6 +230,7 @@ class CoupledDoubleIntegrators:
         iters = torch.zeros(nt)
         resid = torch.zeros(nt)
         min_h = torch.zeros(nt)
+        min_h_true = torch.zeros(nt)
         min_psi1 = torch.zeros(nt)
         sig_min = torch.full((nt,), float('inf'))
 
@@ -245,6 +260,7 @@ class CoupledDoubleIntegrators:
 
             with torch.no_grad():
                 min_h[i] = float(self.barrier(z).min())
+                min_h_true[i] = float(self.true_barrier(z).min())
                 min_psi1[i] = float(self.psi1(z).min())
             _, vel = self.split_state(z)
             running = running + dt * 0.5 * (u ** 2).sum(dim=-1) + dt * self.vel_weight * (vel ** 2).sum(dim=(1, 2))
@@ -253,7 +269,7 @@ class CoupledDoubleIntegrators:
         terminal_cost = self.terminal_cost(z)
         total_cost = alpha_running * running_cost + alpha_terminal * terminal_cost
         info = dict(traj=traj, z_final=z.detach(), active_frac=active_frac, iters=iters, resid=resid,
-                    min_h=min_h, min_psi1=min_psi1, sigma_min_active=sig_min)
+                    min_h=min_h, min_h_true=min_h_true, min_psi1=min_psi1, sigma_min_active=sig_min)
         return total_cost, running_cost, terminal_cost, info
 
 

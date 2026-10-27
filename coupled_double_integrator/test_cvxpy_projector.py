@@ -46,6 +46,26 @@ diff_sh = float((u_s - u_h).abs().max())
 print(f"[2] max|u_slack - u_hard| = {diff_sh:.3e}   (expected small when the hard QP is feasible)")
 ok &= diff_sh < 5e-2
 
+# [2b] reference: exact QP per sample with an interior-point solver (no splitting, no SCS), to see who is right
+import numpy as np
+import cvxpy as cp
+Kn, dn, un0 = K.cpu().double().numpy(), dvec.cpu().double().squeeze(-1).numpy(), u_nom.cpu().double().numpy()
+u_ex = np.zeros_like(un0)
+for b_ in range(B):
+    x = cp.Variable(un0.shape[1])
+    pr = cp.Problem(cp.Minimize(cp.sum_squares(x - un0[b_])), [Kn[b_] @ x <= dn[b_]])
+    solver = cp.CLARABEL if cp.CLARABEL in cp.installed_solvers() else cp.OSQP
+    pr.solve(solver=solver)
+    u_ex[b_] = x.value
+def stats(name, u):
+    un_ = u.detach().cpu().double().numpy()
+    dist2 = ((un_ - un0) ** 2).sum(1).mean()
+    v = np.maximum(np.einsum('bcm,bm->bc', Kn, un_) - dn, 0).max()
+    print(f"    {name:14s} mean|u-u_nom|^2 = {dist2:10.5f}   max violation = {v:.2e}   max|u-u_exact| = {np.abs(un_ - u_ex).max():.3e}")
+print(f"[2b] reference solver: {solver}")
+stats("exact", torch.tensor(u_ex))
+stats("hard CVXPY", u_h); stats("slack CVXPY", u_s); stats("DYS (tight)", u_d)
+
 un = u_nom.clone().requires_grad_(True)
 u_g, _, _ = hard(un, K, dvec)
 (u_g ** 2).sum().backward()
