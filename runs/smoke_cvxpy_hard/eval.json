@@ -1,0 +1,20 @@
+{
+  "running_cost": 28.179058074951172,
+  "terminal_cost": 56.331085205078125,
+  "min_h_over_rollouts": 0.13006651401519775,
+  "min_h_true_over_rollouts": 0.13006651401519775,
+  "min_psi1_over_rollouts": 0.049327999353408813,
+  "active_fraction": 0.5192968845367432,
+  "dys_iters_max": 0,
+  "dys_residual_max": 0.0028345882892608643,
+  "sigma_min_active": 2.1800131797790527,
+  "proj_fail": 0,
+  "pos_cost": 52.16742706298828,
+  "centroid_offset": 5.313767910003662,
+  "pos_cost_floor": 0.24499999999999997,
+  "pos_cost_minus_floor": 51.922427062988284,
+  "pos_cost_floor_with_margin": 0.24499999999999997,
+  "side_error_max": 5.0930328369140625,
+  "min_pair_distance": 1.0582351684570312,
+  "best_safe_epoch": 4
+}
