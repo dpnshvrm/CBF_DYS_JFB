@@ -15,7 +15,7 @@ import argparse
 
 # parse args
 parser = argparse.ArgumentParser()
-parser.add_argument("--problem", choices=['double_integrator_single', "double_integrator_multi", "single_integrator_swarm", "quadcopter_5", "quadcopter_30", "quadcopter_100"])
+parser.add_argument("--problem", choices=['double_integrator_single', "double_integrator_multi", "single_integrator_swarm", "quadcopter_5", "quadcopter_30", "quadcopter_100"], default="quadcopter_5")
 parser.add_argument("--epochs", type=int, default=1000)
 parser.add_argument("--lr", type=float, default=0.001)
 parser.add_argument("--lr_decay", type=int, default=600)

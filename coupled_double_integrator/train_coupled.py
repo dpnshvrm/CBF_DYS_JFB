@@ -9,6 +9,10 @@ Example (from the repo root, in the `implicitOC` conda env):
     # CVXPY-Layers baselines with the SAME network / loss / schedule / seed:
     python coupled_double_integrator/train_coupled.py --projector cvxpy_hard
     python coupled_double_integrator/train_coupled.py --projector cvxpy_slack
+    # DC3-style gradient correction (10 steps, lr 0.01, momentum 0.5):
+    python coupled_double_integrator/train_coupled.py --projector dc3 --dc3_steps 10 --dc3_lr 0.01
+    # ... with the DC3 soft-constraint term (DC3 repo weight 5) in the training loss:
+    python coupled_double_integrator/train_coupled.py --projector dc3 --dc3_steps 10 --dc3_lr 0.01 --viol_penalty 5
 """
 import os
 import sys
@@ -30,11 +34,16 @@ parser.add_argument("--gamma", type=float, default=1.0, help="HOCBF class-K slop
 parser.add_argument("--z0_std", type=float, default=5e-2)
 parser.add_argument("--margin", type=float, default=0.0,
                     help="safety margin eps: the CBF enforces distance >= d + eps (repo obstacles use 0.1-0.15); reports use d")
-parser.add_argument("--projector", choices=["dys", "cvxpy_hard", "cvxpy_slack"], default="dys",
-                    help="safety filter: DYS (ours) or CVXPY-Layers hard QP / quadratic-slack QP (baselines)")
+parser.add_argument("--projector", choices=["dys", "cvxpy_hard", "cvxpy_slack", "dc3"], default="dys",
+                    help="safety filter: DYS (ours), CVXPY-Layers hard QP / quadratic-slack QP, or DC3-style gradient correction (baselines)")
 parser.add_argument("--slack_penalty", type=float, default=1e4, help="lambda in lambda*||s||^2 (cvxpy_slack)")
 parser.add_argument("--scs_eps", type=float, default=1e-3)
 parser.add_argument("--scs_max_iters", type=int, default=1000)
+parser.add_argument("--dc3_steps", type=int, default=10, help="DC3 correction steps (train and test)")
+parser.add_argument("--dc3_lr", type=float, default=0.01, help="DC3 correction step size")
+parser.add_argument("--dc3_momentum", type=float, default=0.5, help="DC3 correction momentum (DC3 repo default 0.5)")
+parser.add_argument("--viol_penalty", type=float, default=0.0,
+                    help="DC3 soft-constraint weight lambda: adds lambda*||ReLU(K u_k - d)||_2 (mean over time steps) to the TRAINING loss (0: off; DC3 repo value 5)")
 parser.add_argument("--vel_weight", type=float, default=1.0, help="w in running cost 0.5|u|^2 + w|v|^2 (repo code: 1)")
 parser.add_argument("--epochs", type=int, default=3000)
 parser.add_argument("--lr", type=float, default=1e-3)
@@ -63,6 +72,8 @@ args = parser.parse_args()
 
 torch.manual_seed(args.seed)
 _mode = args.grad_mode if args.projector == "dys" else args.projector
+if args.projector == "dc3":
+    _mode = f"dc3_t{args.dc3_steps}_lr{args.dc3_lr:g}" + (f"_pen{args.viol_penalty:g}" if args.viol_penalty > 0 else "")
 _tag = (f"_m{args.margin:g}" if args.margin > 0 else "") + (f"_w{args.alpha_terminal_final:g}" if args.alpha_terminal_final != 500.0 else "")
 out_dir = args.out_dir or os.path.join(_HERE, "runs", f"N{args.n_agent}_d{args.d}_{_mode}{_tag}_seed{args.seed}")
 os.makedirs(out_dir, exist_ok=True)
@@ -79,6 +90,9 @@ if args.load_path:
 optimizer = torch.optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 if args.projector == "dys":
     proj = DYSProjector(alpha=args.dys_alpha, grad_mode=args.grad_mode).to(device)
+elif args.projector == "dc3":
+    from dc3_projector import DC3Projector
+    proj = DC3Projector(steps=args.dc3_steps, lr=args.dc3_lr, momentum=args.dc3_momentum).to(device)
 else:
     from cvxpy_projector import CvxpyProjector
     proj = CvxpyProjector(prob.control_dim, prob.n_pair, slack=(args.projector == "cvxpy_slack"),
@@ -106,7 +120,7 @@ best_safe_score = float("inf")      # lowest (running + omega_final * terminal) 
 best_safe_epoch = None
 log_path = os.path.join(out_dir, "log.csv")
 with open(log_path, "w") as fh:
-    fh.write("epoch,total,running,terminal,alpha_terminal,active_frac,min_h,min_psi1,dys_iters_max,dys_res_max,sigma_min_active,time_s,min_h_true,proj_fail\n")
+    fh.write("epoch,total,running,terminal,alpha_terminal,active_frac,min_h,min_psi1,dys_iters_max,dys_res_max,sigma_min_active,time_s,min_h_true,proj_fail,penalty\n")
 
 for epoch in range(1, args.epochs + 1):
     t0 = time.time()
@@ -114,7 +128,7 @@ for epoch in range(1, args.epochs + 1):
     z0 = prob.sample_initial_condition(args.batch_size)
     total, run_c, term_c, info = prob.compute_loss(
         u_fn, z0, nt, args.dt, proj, args.alpha_running, alpha_terminal,
-        max_iter=args.dys_max_iter, tol=args.dys_tol, return_traj=(args.plot_every > 0 and epoch % args.plot_every == 0))
+        max_iter=args.dys_max_iter, tol=args.dys_tol, return_traj=(args.plot_every > 0 and epoch % args.plot_every == 0), viol_penalty=args.viol_penalty)
     total.backward()
     optimizer.step()
     dt_epoch = time.time() - t0
@@ -122,12 +136,12 @@ for epoch in range(1, args.epochs + 1):
     row = (epoch, total.item(), run_c.item(), term_c.item(), alpha_terminal,
            float(info["active_frac"].mean()), float(info["min_h"].min()), float(info["min_psi1"].min()),
            int(info["iters"].max()), float(info["resid"].max()), float(info["sigma_min_active"].min()), dt_epoch,
-           float(info["min_h_true"].min()), int(getattr(proj, "n_fail", 0)))
+           float(info["min_h_true"].min()), int(getattr(proj, "n_fail", 0)), float(info.get("penalty", 0.0)))
     with open(log_path, "a") as fh:
         fh.write(",".join(str(v) for v in row) + "\n")
     print(f"epoch {epoch:5d} total={row[1]:.4e} L={row[2]:.4e} G={row[3]:.4e} w={alpha_terminal:.0f} "
           f"active={row[5]:.2f} min_h={row[6]:.3e} min_psi1={row[7]:.3e} iters={row[8]:4d} res={row[9]:.1e} "
-          f"sig_act={row[10]:.2e} h_true={row[12]:.3e} fail={row[13]} t={dt_epoch:.2f}s", flush=True)
+          f"sig_act={row[10]:.2e} h_true={row[12]:.3e} fail={row[13]} pen={row[14]:.2e} t={dt_epoch:.2f}s", flush=True)
 
     if info["traj"] is not None:
         plot_rollout(prob, info["traj"], os.path.join(out_dir, f"rollout_epoch{epoch}.png"), dt=args.dt)

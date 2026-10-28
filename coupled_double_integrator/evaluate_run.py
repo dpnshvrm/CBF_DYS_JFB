@@ -35,6 +35,7 @@ parser.add_argument("--weights", default="best_safe_control_net.pth", help="file
 parser.add_argument("--dts", default="0.2,0.02", help="comma-separated control steps")
 parser.add_argument("--n_eval", type=int, default=256)
 parser.add_argument("--eval_seed", type=int, default=12345)
+parser.add_argument("--dc3_test_steps", type=int, default=None, help="DC3 runs: override the number of correction steps at evaluation")
 args = parser.parse_args()
 dts = [float(s) for s in args.dts.split(",")]
 
@@ -55,6 +56,10 @@ def build_projector(cfg, prob):
     kind = cfg.get("projector", "dys")
     if kind == "dys":
         return DYSProjector(alpha=cfg["dys_alpha"], grad_mode="jfb").to(device), kind
+    if kind == "dc3":
+        from dc3_projector import DC3Projector
+        steps = args.dc3_test_steps or cfg.get("dc3_steps", 10)
+        return DC3Projector(steps=steps, lr=cfg.get("dc3_lr", 0.01), momentum=cfg.get("dc3_momentum", 0.5)).to(device), kind
     from cvxpy_projector import CvxpyProjector
     return CvxpyProjector(prob.control_dim, prob.n_pair, slack=(kind == "cvxpy_slack"),
                           slack_penalty=cfg.get("slack_penalty", 1e4), eps=cfg.get("scs_eps", 1e-3),
@@ -105,16 +110,16 @@ for run_dir in args.run_dir:
               f"safe_frac={results[f'{dt:g}']['safe_rollout_fraction']:.3f}", flush=True)
     out = dict(run=run_dir, weights=args.weights, filter=kind, n_eval=args.n_eval, eval_seed=args.eval_seed,
                d=prob.d, margin=prob.margin, results=results)
-    stem = os.path.splitext(args.weights)[0]
+    stem = os.path.splitext(args.weights)[0] + (f"_dc3t{args.dc3_test_steps}" if (kind == "dc3" and args.dc3_test_steps) else "")
     with open(os.path.join(run_dir, f"eval_fixed_{stem}.json"), "w") as fh:
         json.dump(out, fh, indent=2)
     rows.append((os.path.basename(run_dir.rstrip("/\\")), kind, results))
 
-print("\n| run | filter | dt | (L, G) | min pair dist. | min h (true d) | safe rollouts | G_pos - floor | filter fail / DYS iters |")
-print("|---|---|---|---|---|---|---|---|---|")
+print("\n| run | filter | dt | (L, G) | min pair dist. | min h (true d) | safe rollouts | G_pos - floor | max residual | filter fail / DYS iters |")
+print("|---|---|---|---|---|---|---|---|---|---|")
 for name, kind, res in rows:
     for dt, r in res.items():
         extra = r["filter_failures"] if kind != "dys" else r["dys_iters_max"]
         gp = r["pos_cost_minus_floor"]
         print(f"| {name} | {kind} | {dt} | ({r['running_cost']:.3g}, {r['terminal_cost']:.3g}) | {r['min_pair_distance']:.3f} | "
-              f"{r['min_h_true']:.3f} | {r['safe_rollout_fraction']:.3f} | {gp if gp is None else format(gp, '+.3f')} | {extra} |")
+              f"{r['min_h_true']:.3f} | {r['safe_rollout_fraction']:.3f} | {gp if gp is None else format(gp, '+.3f')} | {r['filter_residual_max']:.2e} | {extra} |")

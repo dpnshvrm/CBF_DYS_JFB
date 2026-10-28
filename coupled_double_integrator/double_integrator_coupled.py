@@ -210,16 +210,20 @@ class CoupledDoubleIntegrators:
 
     # ---- rollout with the CBF-QP safety filter solved by DYS --------------------------------
     def compute_loss(self, u_fn, z0, nt, dt, proj, alpha_running, alpha_terminal,
-                     max_iter=5000, tol=5e-3, return_traj=True, track_sigma=True):
+                     max_iter=5000, tol=5e-3, return_traj=True, track_sigma=True, viol_penalty=0.0):
         """
         Same structure as compute_loss in double_integrator_multi.py (constraints built from z.detach(),
         projection only if the nominal control violates some row, RK4 step), but for the coupled problem.
+        viol_penalty (lambda, default 0): DC3's soft-constraint term, in the form used by the DC3 repo (method.py, total_loss):
+        lambda * ||ReLU(K u_k - d)||_2 (NOT squared) on the filtered control, averaged over the nt time steps and the batch;
+        added to total_cost only (running/terminal costs are unchanged). DC3 repo value with completion: 10 * (1 - 0.5) = 5.
         Returns total_cost, running_cost, terminal_cost, info(dict).
         """
         B = z0.shape[0]
         z = z0
         ti = torch.zeros(1, device=z0.device)
         running = 0.0
+        penalty = 0.0
 
         traj = None
         if return_traj:
@@ -245,6 +249,8 @@ class CoupledDoubleIntegrators:
 
             if bool(viol.max() > 0):
                 u, _, pinfo = proj(u_nom, K, dvec, max_iter=max_iter, tol=tol)
+                if viol_penalty > 0:
+                    penalty = penalty + ((torch.relu(K @ u.unsqueeze(-1) - dvec) ** 2).sum(dim=(1, 2)) + 1e-12).sqrt()
                 iters[i] = pinfo['iters']
                 resid[i] = pinfo['final_residual']
                 if track_sigma:
@@ -268,8 +274,12 @@ class CoupledDoubleIntegrators:
         running_cost = running.mean()
         terminal_cost = self.terminal_cost(z)
         total_cost = alpha_running * running_cost + alpha_terminal * terminal_cost
+        penalty_cost = (penalty / nt).mean() if torch.is_tensor(penalty) else torch.zeros((), device=z0.device)
+        if viol_penalty > 0:
+            total_cost = total_cost + viol_penalty * penalty_cost
         info = dict(traj=traj, z_final=z.detach(), active_frac=active_frac, iters=iters, resid=resid,
-                    min_h=min_h, min_h_true=min_h_true, min_psi1=min_psi1, sigma_min_active=sig_min)
+                    min_h=min_h, min_h_true=min_h_true, min_psi1=min_psi1, sigma_min_active=sig_min,
+                    penalty=float(penalty_cost))
         return total_cost, running_cost, terminal_cost, info
 
 

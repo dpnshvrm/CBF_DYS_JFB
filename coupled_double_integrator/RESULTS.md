@@ -19,6 +19,30 @@ L = running cost, G = terminal cost (unweighted), as in the paper's Table 1; low
 
 A negative `G_pos - floor` is impossible for a safe policy, so those rows violated the distance constraint.
 
+## Table 1b (A'): fixed-state evaluation of the best-safe networks, each with its own filter
+
+256 identical initial states (fixed seed 12345, drawn on the CPU) for every row, produced by `evaluate_run.py`. The CVXPY runs were still training, so their rows describe the best-safe network saved at evaluation time (the checkpoint is overwritten whenever a better safe epoch appears; its epoch was not recorded, but it is at least epoch 1003 for hard and 761 for slack, the best-safe epochs in the logs pulled at 13:22), not a finished run. dt = 0.2 is the training step; dt = 0.02 re-runs the same network with a ten times finer control step.
+
+**dt = 0.2 (training step)**
+
+| Method | best-safe epoch | (L, G) | min pair dist. (d = 0.7) | min h (true d) | safe rollouts | G_pos - floor | filter failures / max DYS iters | s / epoch (training) | training time to best-safe epoch |
+|---|---|---|---|---|---|---|---|---|---|
+| DYS-JFB (ours) | 340 | (4.79, 0.265) | 0.708 | 0.011 | 256 / 256 | +0.017 | 336 iters | 0.56 | 7 min (exact) |
+| CVXPY (IFT), hard QP | >= 1003 | (4.36, 0.252) | 0.709 | 0.013 | 256 / 256 | +0.007 | 0 failures | 11.10 | >= 182 min (3.0 h) |
+| CVXPY (IFT + reg.), quadratic slack | >= 761 | (4.55, 0.252) | 0.709 | 0.012 | 256 / 256 | +0.007 | 0 failures | 11.57 | >= 145 min (2.4 h) |
+
+**dt = 0.02 (same networks, ten times finer control step)**
+
+| Method | best-safe epoch | (L, G) | min pair dist. (d = 0.7) | min h (true d) | safe rollouts | G_pos - floor | filter failures / max DYS iters | s / epoch (training) | training time to best-safe epoch |
+|---|---|---|---|---|---|---|---|---|---|
+| DYS-JFB (ours) | 340 | (4.44, 0.265) | 0.708 | 0.011 | 256 / 256 | +0.018 | 336 iters | 0.56 | 7 min (exact) |
+| CVXPY (IFT), hard QP | >= 1003 | (4.02, 0.251) | 0.708 | 0.011 | 256 / 256 | +0.006 | 0 failures | 11.10 | >= 182 min (3.0 h) |
+| CVXPY (IFT + reg.), quadratic slack | >= 761 | (4.17, 0.252) | 0.708 | 0.011 | 256 / 256 | +0.007 | 0 failures | 11.57 | >= 145 min (2.4 h) |
+
+Times come from `log.csv`: `s / epoch` is the mean seconds per training epoch after epoch 200 (shared server, so rough); `training time to best-safe epoch` is the cumulative logged time up to that epoch. For the CVXPY runs the epoch (and hence the time) is a lower bound, as explained above. Evaluation time is not included.
+
+How to read it: all three best-safe networks stay at least 0.708 apart in every one of 256 rollouts, at both step sizes. CVXPY's networks reach a slightly lower G (0.252 against 0.265, i.e. closer to the packed optimum 0.245) and a slightly lower L than JFB's. Caveats: one seed; the JFB checkpoint was selected from noisy single-batch scores (the score fluctuates by about 40 between neighbouring epochs, against 0.1 for hard CVXPY), so a better JFB network may exist that the rule did not pick; the CVXPY networks come from unfinished runs.
+
 ## Table 2 (B): training-log values for all methods
 
 Best-safe epoch = the epoch with the lowest `running + 500 * terminal` among epochs whose training rollouts never violated the true distance d (min h >= 0). 'Last 50' = mean over the final 50 logged epochs.
@@ -33,7 +57,7 @@ Best-safe epoch = the epoch with the lowest `running + 500 * terminal` among epo
 ## Reading the tables
 
 * Best-safe scores (running + 500 G; training batches, one seed): DYS-JFB (ours), default schedule: 132.0; DYS-JFB, omega capped at 300 (ablation): 131.9; CVXPY-Layers (IFT), hard QP: 130.3; CVXPY-Layers (IFT + reg.), quadratic slack: 130.6. Gaps of about 1% are within the noise.
-* The DYS-JFB final network is unsafe (violations in most epochs after about epoch 500). The best-safe checkpoint of the default-schedule run is safe, also at dt = 0.02 (checked with diagnose_rollout.py; not yet checked for the other runs). The CVXPY runs have no violation so far.
+* The DYS-JFB final network is unsafe (violations in most epochs after about epoch 500). The best-safe checkpoints of the default-schedule JFB run and of both CVXPY runs are safe in all 256 fixed rollouts, also at dt = 0.02 (Table 1b; not checked for the omega-capped run). The CVXPY runs have no violation so far.
 * Cost: about 0.5 s per epoch for JFB against 11-12 s for CVXPY, on a shared server (rough).
-* Still to fill in: held-out (L, G) for the CVXPY networks when the runs finish, JFB seeds 1 and 2, and the dt = 0.02 check for every method.
+* Still to fill in: re-run `evaluate_run.py` on the CVXPY runs when they finish (best-safe and final networks), JFB seeds 1 and 2, and the final networks at dt = 0.02.
 
