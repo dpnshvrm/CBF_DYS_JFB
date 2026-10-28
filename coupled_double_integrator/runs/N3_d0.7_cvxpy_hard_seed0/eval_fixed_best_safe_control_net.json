@@ -1,0 +1,37 @@
+{
+  "run": "coupled_double_integrator/runs/N3_d0.7_cvxpy_hard_seed0",
+  "weights": "best_safe_control_net.pth",
+  "filter": "cvxpy_hard",
+  "n_eval": 256,
+  "eval_seed": 12345,
+  "d": 0.7,
+  "margin": 0.0,
+  "results": {
+    "0.2": {
+      "running_cost": 4.356553554534912,
+      "terminal_cost": 0.2518981695175171,
+      "min_pair_distance": 0.7089001536369324,
+      "median_min_pair_distance": 0.7094236016273499,
+      "min_h_true": 0.012539446353912354,
+      "safe_rollout_fraction": 1.0,
+      "pos_cost_minus_floor": 0.006841306686401399,
+      "side_error_max": 0.009912194684147835,
+      "dys_iters_max": null,
+      "filter_failures": 0,
+      "filter_residual_max": 0.0178985595703125
+    },
+    "0.02": {
+      "running_cost": 4.018489837646484,
+      "terminal_cost": 0.2511296272277832,
+      "min_pair_distance": 0.7077879905700684,
+      "median_min_pair_distance": 0.7082763314247131,
+      "min_h_true": 0.010963797569274902,
+      "safe_rollout_fraction": 1.0,
+      "pos_cost_minus_floor": 0.0060604560375213945,
+      "side_error_max": 0.008751925081014633,
+      "dys_iters_max": null,
+      "filter_failures": 0,
+      "filter_residual_max": 0.0178985595703125
+    }
+  }
+}
