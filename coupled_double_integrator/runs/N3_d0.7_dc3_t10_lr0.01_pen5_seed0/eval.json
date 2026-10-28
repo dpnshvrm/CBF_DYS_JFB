@@ -1,0 +1,21 @@
+{
+  "running_cost": Infinity,
+  "terminal_cost": Infinity,
+  "min_h_over_rollouts": 0.21759569644927979,
+  "min_h_true_over_rollouts": 0.21759569644927979,
+  "min_psi1_over_rollouts": NaN,
+  "active_fraction": 0.19367188215255737,
+  "dys_iters_max": 10,
+  "dys_residual_max": 2.137289713299856e+22,
+  "sigma_min_active": 40.54183578491211,
+  "proj_fail": 0,
+  "pos_cost": Infinity,
+  "centroid_offset": Infinity,
+  "pos_cost_floor": 0.24499999999999997,
+  "pos_cost_minus_floor": Infinity,
+  "pos_cost_floor_with_margin": 0.24499999999999997,
+  "side_error_max": Infinity,
+  "min_pair_distance": 2.8727853298187256,
+  "best_safe_epoch": 162,
+  "diverged_epoch": 564
+}
