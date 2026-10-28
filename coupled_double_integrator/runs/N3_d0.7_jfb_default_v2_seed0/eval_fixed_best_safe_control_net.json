@@ -1,0 +1,37 @@
+{
+  "run": "coupled_double_integrator/runs/N3_d0.7_jfb_default_v2_seed0",
+  "weights": "best_safe_control_net.pth",
+  "filter": "dys",
+  "n_eval": 256,
+  "eval_seed": 12345,
+  "d": 0.7,
+  "margin": 0.0,
+  "results": {
+    "0.2": {
+      "running_cost": 4.7888689041137695,
+      "terminal_cost": 0.26524391770362854,
+      "min_pair_distance": 0.7077376842498779,
+      "median_min_pair_distance": 0.7090623378753662,
+      "min_h_true": 0.010892629623413086,
+      "safe_rollout_fraction": 1.0,
+      "pos_cost_minus_floor": 0.016826694011688265,
+      "side_error_max": 0.00947619415819645,
+      "dys_iters_max": 336,
+      "filter_failures": null,
+      "filter_residual_max": 0.004988193511962891
+    },
+    "0.02": {
+      "running_cost": 4.435708522796631,
+      "terminal_cost": 0.26549792289733887,
+      "min_pair_distance": 0.7077378034591675,
+      "median_min_pair_distance": 0.7082678079605103,
+      "min_h_true": 0.010892808437347412,
+      "safe_rollout_fraction": 1.0,
+      "pos_cost_minus_floor": 0.01753539323806766,
+      "side_error_max": 0.008627988398075104,
+      "dys_iters_max": 336,
+      "filter_failures": null,
+      "filter_residual_max": 0.00499725341796875
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "run": "coupled_double_integrator/runs/N3_d0.7_cvxpy_slack_seed0",
+  "weights": "best_safe_control_net.pth",
+  "filter": "cvxpy_slack",
+  "n_eval": 256,
+  "eval_seed": 12345,
+  "d": 0.7,
+  "margin": 0.0,
+  "results": {
+    "0.2": {
+      "running_cost": 4.552942276000977,
+      "terminal_cost": 0.2523990869522095,
+      "min_pair_distance": 0.7088026404380798,
+      "median_min_pair_distance": 0.7092289924621582,
+      "min_h_true": 0.012401163578033447,
+      "safe_rollout_fraction": 1.0,
+      "pos_cost_minus_floor": 0.007154767513275179,
+      "side_error_max": 0.009716397151350975,
+      "dys_iters_max": null,
+      "filter_failures": 0,
+      "filter_residual_max": 0.0016228854656219482
+    },
+    "0.02": {
+      "running_cost": 4.167975425720215,
+      "terminal_cost": 0.2519705295562744,
+      "min_pair_distance": 0.7076007127761841,
+      "median_min_pair_distance": 0.708046019077301,
+      "min_h_true": 0.01069873571395874,
+      "safe_rollout_fraction": 1.0,
+      "pos_cost_minus_floor": 0.006502335071563753,
+      "side_error_max": 0.008643126115202904,
+      "dys_iters_max": null,
+      "filter_failures": 0,
+      "filter_residual_max": 0.001513361930847168
+    }
+  }
+}
