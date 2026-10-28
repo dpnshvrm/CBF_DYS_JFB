@@ -34,7 +34,7 @@ print(f"spectral norm^2 of K: median {float(torch.linalg.matrix_norm(K, 2).pow(2
       "  (heavy-ball stability needs roughly lr < 3 / (2 ||K||^2))")
 
 print("\n[1] steps | lr | max violation | median violation | finite | median ||u - u_exact||")
-for lr in (0.003, 0.01, 0.03):
+for lr in (0.003, 0.01, 0.03, 0.06, 0.1):
     for steps in (5, 10, 100, 1000):
         p = DC3Projector(steps=steps, lr=lr, momentum=0.5).to(device)
         u, _, info = p(u_nom, K, dvec)
