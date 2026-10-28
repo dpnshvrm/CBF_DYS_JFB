@@ -17,6 +17,7 @@ Example (from the repo root, in the `implicitOC` conda env):
 import os
 import sys
 import time
+import math
 import json
 import argparse
 
@@ -118,6 +119,7 @@ alpha_terminal = args.alpha_terminal_start
 best_loss = float("inf")
 best_safe_score = float("inf")      # lowest (running + omega_final * terminal) among epochs with min_h_true >= 0
 best_safe_epoch = None
+diverged_epoch = None
 log_path = os.path.join(out_dir, "log.csv")
 with open(log_path, "w") as fh:
     fh.write("epoch,total,running,terminal,alpha_terminal,active_frac,min_h,min_psi1,dys_iters_max,dys_res_max,sigma_min_active,time_s,min_h_true,proj_fail,penalty\n")
@@ -130,6 +132,11 @@ for epoch in range(1, args.epochs + 1):
         u_fn, z0, nt, args.dt, proj, args.alpha_running, alpha_terminal,
         max_iter=args.dys_max_iter, tol=args.dys_tol, return_traj=(args.plot_every > 0 and epoch % args.plot_every == 0), viol_penalty=args.viol_penalty)
     total.backward()
+    # stop before the update if the loss or any gradient is not finite (keeps the last finite weights; nothing else changes)
+    if (not math.isfinite(total.item())) or any(q.grad is not None and not bool(torch.isfinite(q.grad).all()) for q in net.parameters()):
+        print(f"epoch {epoch}: non-finite loss or gradient -> stopping before the update (training diverged)", flush=True)
+        diverged_epoch = epoch
+        break
     optimizer.step()
     dt_epoch = time.time() - t0
 
@@ -186,6 +193,7 @@ def evaluate(tag):
 
 summary, info = evaluate("final network")
 summary["best_safe_epoch"] = best_safe_epoch
+summary["diverged_epoch"] = diverged_epoch
 with open(os.path.join(out_dir, "eval.json"), "w") as fh:
     json.dump(summary, fh, indent=2)
 plot_rollout(prob, info["traj"], os.path.join(out_dir, "rollout_final.png"), dt=args.dt)
